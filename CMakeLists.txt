@@ -16,4 +16,4 @@ add_commonlibsse_plugin(PortableOneRoomMag
     USE_ADDRESS_LIBRARY
     SOURCES src/main.cpp)
 
-target_precompile_headers(PortableOneRoomMag PRIVATE <RE/Skyrim.h> <SKSE/SKSE.h>)
+target_precompile_headers(PortableOneRoomMag PRIVATE src/PCH.h)
