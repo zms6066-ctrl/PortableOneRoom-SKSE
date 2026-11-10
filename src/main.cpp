@@ -1,4 +1,4 @@
-// PortableOneRoomMag: magazines for the Portable One Room guns (M629 6 rounds, K2 30 rounds).
+// PortableOneRoomMag: magazines for the Portable One Room guns (M629 6 rounds, Colt M1911 8 rounds, K2 30 rounds).
 // Replaces the old Papyrus scripts (PORGun on the weapon + PORMagWatch effect). Those were attached to the
 // weapon itself, and a weapon taken out of a container sometimes never woke its script up, so no magazine.
 // Here everything is watched from the player side: whatever gun the player holds, wherever it came from.
@@ -23,11 +23,11 @@ namespace
 
 	Gun g_guns[] = {
 		{ 0xA90, 6, "M629" },
+		{ 0xAA0, 8, "M1911" },
 		{ 0xA50, 30, "K2" },
 	};
 
 	std::atomic_bool g_reloading{ false };
-	int              g_animLogs = 0;
 
 	Gun* EquippedGun()
 	{
@@ -69,8 +69,7 @@ namespace
 
 	class Sink :
 		public RE::BSTEventSink<RE::TESContainerChangedEvent>,
-		public RE::BSTEventSink<RE::TESEquipEvent>,
-		public RE::BSTEventSink<RE::BSAnimationGraphEvent>
+		public RE::BSTEventSink<RE::TESEquipEvent>
 	{
 	public:
 		static Sink* Get()
@@ -120,16 +119,6 @@ namespace
 			}
 			return RE::BSEventNotifyControl::kContinue;
 		}
-
-		// diagnostics only: the animation events a gun sends, so the counting can be switched to them if needed
-		RE::BSEventNotifyControl ProcessEvent(const RE::BSAnimationGraphEvent* a_ev, RE::BSTEventSource<RE::BSAnimationGraphEvent>*) override
-		{
-			if (a_ev && g_animLogs < 200 && EquippedGun()) {
-				g_animLogs++;
-				SKSE::log::info("anim event: {}", a_ev->tag.c_str());
-			}
-			return RE::BSEventNotifyControl::kContinue;
-		}
 	};
 
 	void OnDataLoaded()
@@ -150,16 +139,13 @@ namespace
 		for (auto& g : g_guns) {
 			g.fired = 0;
 		}
-		if (auto pc = RE::PlayerCharacter::GetSingleton()) {
-			pc->AddAnimationGraphEventSink(Sink::Get());
-		}
 	}
 }
 
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.0.0 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.1.0 - runtime {}", a_skse->RuntimeVersion().string());
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
 		switch (a_msg->type) {
