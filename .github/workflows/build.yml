@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -55,3 +58,16 @@ jobs:
           path: |
             build/PortableOneRoomMag.dll
             build/PortableOneRoomMag.pdb
+
+      - name: Publish DLL to the dist branch
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          mkdir dist_out && cp build/PortableOneRoomMag.dll build/PortableOneRoomMag.pdb dist_out/
+          cd dist_out
+          git init -q -b dist
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A
+          git commit -qm "Build ${GITHUB_SHA}"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" dist
