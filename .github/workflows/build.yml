@@ -63,7 +63,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         shell: bash
         run: |
-          mkdir dist_out && cp build/PortableOneRoomMag.dll build/PortableOneRoomMag.pdb dist_out/
+          mkdir dist_out && cp build/PortableOneRoomMag.dll dist_out/
           cd dist_out
           git init -q -b dist
           git config user.name "github-actions"
