@@ -1,4 +1,4 @@
-// PortableOneRoomMag: magazines for the Portable One Room guns (Colt Single Action Army 6 rounds, Colt New Agent 8 rounds, K2 30 rounds).
+// PortableOneRoomMag: magazines for the Portable One Room guns (S&W M29 6 rounds, Colt M1911 8 rounds, K2 30 rounds).
 // Replaces the old Papyrus scripts (PORGun on the weapon + PORMagWatch effect). Those were attached to the
 // weapon itself, and a weapon taken out of a container sometimes never woke its script up, so no magazine.
 // Here everything is watched from the player side: whatever gun the player holds, wherever it came from.
@@ -8,9 +8,8 @@
 // reload   : after <size> shots, unequip + re-equip the ammo on the main thread -> the gun's reload animation
 // reset    : the player equipping the ammo (manual reload) or re-equipping the gun refills the magazine
 // action   : on every counted shot the gun's own parts move (nodes in the gun meshes, both 1st and 3rd person):
-//            Colt SAA - hammer falls and re-cocks while the cylinder turns one chamber; Colt New Agent - slide cycles and
+//            S&W M29 - hammer falls and re-cocks while the cylinder turns one chamber; Colt M1911 - slide cycles and
 //            the hammer falls / is pushed back. Driven from PlayerCharacter::Update (vtable 0xAD).
-// hand fit : PortableOneRoomMag.ini moves / turns the node 'PORAdjust' inside each pistol mesh (re-read on equip)
 
 namespace
 {
@@ -27,8 +26,8 @@ namespace
 	};
 
 	Gun g_guns[] = {
-		{ 0xA90, 6, "SAA", 1 },
-		{ 0xAA0, 8, "NewAgent", 2 },
+		{ 0xA90, 6, "M29", 1 },
+		{ 0xAA0, 8, "M1911", 2 },
 		{ 0xA50, 30, "K2", 0 },
 	};
 
@@ -62,11 +61,11 @@ namespace
 				return;
 			}
 			if (g_kind == 1) {
-				constexpr float H = 22.0f;
+				constexpr float H = 30.0f;
 				a_hammer = t < 0.03f ? H * t / 0.03f : t < 0.12f ? H : H * (1.0f - Ease((t - 0.12f) / 0.28f));
 				a_cyl = t < 0.40f ? 60.0f * Ease((t - 0.12f) / 0.28f) : 0.0f;  // 6-fold symmetric: 60 deg == 0
 			} else if (g_kind == 2) {
-				constexpr float H = 50.0f, L = 1.9f;
+				constexpr float H = 50.0f, L = 2.5f;
 				a_hammer = t < 0.012f ? H * t / 0.012f : H * (1.0f - Ease((t - 0.012f) / 0.033f));
 				a_slide = t < 0.03f ? -L * t / 0.03f : -L * (1.0f - Ease((t - 0.03f) / 0.07f));
 			}
@@ -92,14 +91,8 @@ namespace
 			}
 		}
 
-		const char* AdjGun();   // equipped gun name, or nullptr
-		void        ApplyAdjust(RE::PlayerCharacter* a_pc, const char* a_gun);
-
 		void Tick(RE::PlayerCharacter* a_pc, float a_dt)
 		{
-			if (a_pc) {
-				if (auto g = AdjGun()) ApplyAdjust(a_pc, g);
-			}
 			if (g_t < 0.0f || !a_pc) {
 				return;
 			}
@@ -112,68 +105,6 @@ namespace
 			}
 			if (done) {
 				g_t = -1.0f;
-			}
-		}
-
-		// ---- hand position fine-tune: Data/SKSE/Plugins/PortableOneRoomMag.ini, one [section] per gun (SAA / NewAgent)
-		struct Adj { float fwd{ 0 }, up{ 0 }, side{ 0 }, pitch{ 0 }, yaw{ 0 }, roll{ 0 }; };
-		std::map<std::string, Adj> g_adj;
-
-		void LoadIni()
-		{
-			g_adj.clear();
-			std::ifstream f("Data/SKSE/Plugins/PortableOneRoomMag.ini");
-			std::string line, sec;
-			while (std::getline(f, line)) {
-				auto c = line.find_first_of(";#");
-				if (c != std::string::npos) line.erase(c);
-				auto trim = [](std::string x) { x.erase(0, x.find_first_not_of(" \t\r")); x.erase(x.find_last_not_of(" \t\r") + 1); return x; };
-				line = trim(line);
-				if (line.empty()) continue;
-				if (line.front() == '[' && line.back() == ']') { sec = trim(line.substr(1, line.size() - 2)); continue; }
-				auto e = line.find('=');
-				if (e == std::string::npos || sec.empty()) continue;
-				auto k = trim(line.substr(0, e));
-				float v = 0.0f;
-				try { v = std::stof(trim(line.substr(e + 1))); } catch (...) { continue; }
-				auto& a = g_adj[sec];
-				if (k == "Forward") a.fwd = v; else if (k == "Up") a.up = v; else if (k == "Side") a.side = v;
-				else if (k == "Pitch") a.pitch = v; else if (k == "Yaw") a.yaw = v; else if (k == "Roll") a.roll = v;
-			}
-			for (auto& [k, a] : g_adj) {
-				SKSE::log::info("ini [{}] forward {} up {} side {} pitch {} yaw {} roll {}", k, a.fwd, a.up, a.side, a.pitch, a.yaw, a.roll);
-			}
-		}
-
-		RE::NiMatrix3 Mul(const RE::NiMatrix3& a, const RE::NiMatrix3& b)
-		{
-			RE::NiMatrix3 m;
-			for (int r = 0; r < 3; r++)
-				for (int c = 0; c < 3; c++)
-					m.entry[r][c] = a.entry[r][0] * b.entry[0][c] + a.entry[r][1] * b.entry[1][c] + a.entry[r][2] * b.entry[2][c];
-			return m;
-		}
-
-		void ApplyAdjust(RE::PlayerCharacter* a_pc, const char* a_gun)
-		{
-			static const RE::BSFixedString name{ "PORAdjust" };
-			Adj a{};
-			if (auto it = g_adj.find(a_gun); it != g_adj.end()) a = it->second;
-			// gun frame: x = side, y = forward (muzzle), z = down (grip)
-			const float r = a.yaw * 0.01745329252f, cy = std::cos(r), sy = std::sin(r);
-			RE::NiMatrix3 yaw;
-			yaw.entry[0][0] = cy; yaw.entry[0][1] = -sy; yaw.entry[0][2] = 0;
-			yaw.entry[1][0] = sy; yaw.entry[1][1] = cy; yaw.entry[1][2] = 0;
-			yaw.entry[2][0] = 0; yaw.entry[2][1] = 0; yaw.entry[2][2] = 1;
-			const RE::NiMatrix3 rot = Mul(yaw, Mul(Rot(0, -a.pitch), Rot(1, a.roll)));   // + pitch = muzzle up (z is down)
-			RE::NiUpdateData ud{};
-			for (bool fp : { false, true }) {
-				auto root = a_pc->Get3D(fp);
-				auto n = root ? root->GetObjectByName(name) : nullptr;
-				if (!n) continue;
-				n->local.rotate = rot;
-				n->local.translate = RE::NiPoint3(a.side, a.fwd, -a.up);
-				n->Update(ud);
 			}
 		}
 
@@ -220,12 +151,6 @@ namespace
 			}
 		}
 		return nullptr;
-	}
-
-	const char* Mech::AdjGun()
-	{
-		auto g = EquippedGun();
-		return g && g->mech ? g->name : nullptr;
 	}
 
 	void Reload(Gun* a_gun)
@@ -291,7 +216,6 @@ namespace
 			for (auto& g : g_guns) {
 				if (a_ev->baseObject == g.id) {
 					g.fired = 0;  // gun (re)equipped: full magazine
-					if (g.mech) Mech::LoadIni();   // edit the INI, re-equip the gun -> new hand position
 				}
 			}
 			auto form = RE::TESForm::LookupByID(a_ev->baseObject);
@@ -306,7 +230,6 @@ namespace
 
 	void OnDataLoaded()
 	{
-		Mech::LoadIni();
 		auto dh = RE::TESDataHandler::GetSingleton();
 		for (auto& g : g_guns) {
 			auto form = dh ? dh->LookupForm(g.local, kPlugin) : nullptr;
@@ -329,7 +252,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.3.0 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.2.4 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
