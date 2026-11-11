@@ -93,6 +93,7 @@ namespace
 		}
 
 		const char* AdjGun();   // equipped gun name, or nullptr
+		void        ApplyAdjust(RE::PlayerCharacter* a_pc, const char* a_gun);
 
 		void Tick(RE::PlayerCharacter* a_pc, float a_dt)
 		{
