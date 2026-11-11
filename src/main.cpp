@@ -1,4 +1,4 @@
-// PortableOneRoomMag: magazines for the Portable One Room guns (S&W M29 6 rounds, Colt New Agent 8 rounds, K2 30 rounds).
+// PortableOneRoomMag: magazines for the Portable One Room guns (Colt Single Action Army 6 rounds, Colt New Agent 8 rounds, K2 30 rounds).
 // Replaces the old Papyrus scripts (PORGun on the weapon + PORMagWatch effect). Those were attached to the
 // weapon itself, and a weapon taken out of a container sometimes never woke its script up, so no magazine.
 // Here everything is watched from the player side: whatever gun the player holds, wherever it came from.
@@ -8,7 +8,7 @@
 // reload   : after <size> shots, unequip + re-equip the ammo on the main thread -> the gun's reload animation
 // reset    : the player equipping the ammo (manual reload) or re-equipping the gun refills the magazine
 // action   : on every counted shot the gun's own parts move (nodes in the gun meshes, both 1st and 3rd person):
-//            S&W M29 - hammer falls and re-cocks while the cylinder turns one chamber; Colt New Agent - slide cycles and
+//            Colt SAA - hammer falls and re-cocks while the cylinder turns one chamber; Colt New Agent - slide cycles and
 //            the hammer falls / is pushed back. Driven from PlayerCharacter::Update (vtable 0xAD).
 
 namespace
@@ -26,7 +26,7 @@ namespace
 	};
 
 	Gun g_guns[] = {
-		{ 0xA90, 6, "M29", 1 },
+		{ 0xA90, 6, "SAA", 1 },
 		{ 0xAA0, 8, "NewAgent", 2 },
 		{ 0xA50, 30, "K2", 0 },
 	};
@@ -61,7 +61,7 @@ namespace
 				return;
 			}
 			if (g_kind == 1) {
-				constexpr float H = 30.0f;
+				constexpr float H = 22.0f;
 				a_hammer = t < 0.03f ? H * t / 0.03f : t < 0.12f ? H : H * (1.0f - Ease((t - 0.12f) / 0.28f));
 				a_cyl = t < 0.40f ? 60.0f * Ease((t - 0.12f) / 0.28f) : 0.0f;  // 6-fold symmetric: 60 deg == 0
 			} else if (g_kind == 2) {
@@ -252,7 +252,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.2.2 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.2.3 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
