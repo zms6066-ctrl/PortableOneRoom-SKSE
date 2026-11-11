@@ -164,7 +164,7 @@ namespace
 			yaw.entry[0][0] = cy; yaw.entry[0][1] = -sy; yaw.entry[0][2] = 0;
 			yaw.entry[1][0] = sy; yaw.entry[1][1] = cy; yaw.entry[1][2] = 0;
 			yaw.entry[2][0] = 0; yaw.entry[2][1] = 0; yaw.entry[2][2] = 1;
-			const RE::NiMatrix3 rot = Mul(yaw, Mul(Rot(0, -a.pitch), Rot(1, a.roll))   // + pitch = muzzle up (z is down));
+			const RE::NiMatrix3 rot = Mul(yaw, Mul(Rot(0, -a.pitch), Rot(1, a.roll)));   // + pitch = muzzle up (z is down)
 			RE::NiUpdateData ud{};
 			for (bool fp : { false, true }) {
 				auto root = a_pc->Get3D(fp);
