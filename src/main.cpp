@@ -66,8 +66,8 @@ namespace
 				a_cyl = t < 0.40f ? 60.0f * Ease((t - 0.12f) / 0.28f) : 0.0f;  // 6-fold symmetric: 60 deg == 0
 			} else if (g_kind == 2) {
 				constexpr float H = 50.0f, L = 2.5f;
-				a_hammer = t < 0.012f ? H * t / 0.012f : H * (1.0f - Ease((t - 0.012f) / 0.033f));
-				a_slide = t < 0.03f ? -L * t / 0.03f : -L * (1.0f - Ease((t - 0.03f) / 0.07f));
+				a_hammer = t < 0.025f ? H * t / 0.025f : H * (1.0f - Ease((t - 0.025f) / 0.075f));
+				a_slide = t < 0.06f ? -L * t / 0.06f : -L * (1.0f - Ease((t - 0.06f) / 0.14f));
 			}
 		}
 
@@ -252,7 +252,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.2.4 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.2.5 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
