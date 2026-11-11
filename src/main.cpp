@@ -28,7 +28,7 @@ namespace
 	Gun g_guns[] = {
 		{ 0xA90, 6, "M29", 1 },
 		{ 0xAA0, 8, "M1911", 2 },
-		{ 0xA50, 30, "K2", 0 },
+		{ 0xA50, 30, "K2", 3 },
 	};
 
 	namespace Mech
@@ -68,6 +68,9 @@ namespace
 				constexpr float H = 50.0f, L = 2.5f;
 				a_hammer = t < 0.025f ? H * t / 0.025f : H * (1.0f - Ease((t - 0.025f) / 0.075f));
 				a_slide = t < 0.06f ? -L * t / 0.06f : -L * (1.0f - Ease((t - 0.06f) / 0.14f));
+			} else if (g_kind == 3) {  // K2: bolt carrier + charging handle, short and fast (fits full-auto)
+				constexpr float L = 2.2f;
+				a_slide = t < 0.025f ? -L * t / 0.025f : -L * (1.0f - Ease((t - 0.025f) / 0.065f));
 			}
 		}
 
@@ -252,7 +255,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.2.5 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.2.6 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
