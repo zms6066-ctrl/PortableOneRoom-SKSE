@@ -25,6 +25,8 @@ namespace
 		std::int32_t  fired{ 0 };
 	};
 
+	void ReloadTick(RE::PlayerCharacter* a_pc, float a_dt);
+
 	Gun g_guns[] = {
 		{ 0xA90, 6, "M29", 1 },
 		{ 0xAA0, 8, "M1911", 2 },
@@ -125,6 +127,7 @@ namespace
 			{
 				func(a_pc, a_dt);
 				Tick(a_pc, a_dt);
+				ReloadTick(a_pc, a_dt);
 			}
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
@@ -156,7 +159,24 @@ namespace
 		return nullptr;
 	}
 
+	// Magazine empty -> reload. The old way (queued unequip + equip of the ammo straight after the last shot) broke
+	// when the player kept clicking: the next attack slipped in between, ran with no bolt (a bare swing), and the
+	// queued re-equip got dropped, leaving "no bolts". Now: wait for the attack to finish (max 0.4 s), do both
+	// changes immediately in one task, then check 0.35 s later that the ammo is really back (re-equip up to 3x).
+	Gun*           g_pend{ nullptr };     // waiting to reload
+	float          g_pendT{ 0.0f };
+	Gun*           g_check{ nullptr };    // reloaded, verifying
+	RE::TESAmmo*   g_checkAmmo{ nullptr };
+	float          g_checkT{ 0.0f };
+	int            g_checkTries{ 0 };
+
 	void Reload(Gun* a_gun)
+	{
+		g_pend = a_gun;
+		g_pendT = 0.0f;
+	}
+
+	void DoReload(Gun* a_gun)
 	{
 		SKSE::GetTaskInterface()->AddTask([a_gun]() {
 			auto pc = RE::PlayerCharacter::GetSingleton();
@@ -165,15 +185,64 @@ namespace
 			}
 			auto ammo = pc->GetCurrentAmmo();
 			if (!ammo) {
+				SKSE::log::info("{}: reload - no ammo equipped", a_gun->name);
 				return;
 			}
 			auto em = RE::ActorEquipManager::GetSingleton();
 			g_reloading = true;
-			em->UnequipObject(pc, ammo, nullptr, 1, nullptr, true, false, false);
-			em->EquipObject(pc, ammo, nullptr, 1, nullptr, true, false, false);
+			em->UnequipObject(pc, ammo, nullptr, 1, nullptr, false, false, false);
+			em->EquipObject(pc, ammo, nullptr, 1, nullptr, false, false, false);
 			g_reloading = false;
+			g_check = a_gun;
+			g_checkAmmo = ammo;
+			g_checkT = 0.0f;
+			g_checkTries = 0;
 			SKSE::log::info("{}: {} shots -> reload", a_gun->name, a_gun->size);
 		});
+	}
+
+	void ReloadTick(RE::PlayerCharacter* a_pc, float a_dt)
+	{
+		if (g_pend) {
+			if (EquippedGun() != g_pend) {
+				g_pend = nullptr;
+			} else {
+				g_pendT += a_dt;
+				const bool idle = a_pc->AsActorState()->GetAttackState() == RE::ATTACK_STATE_ENUM::kNone;
+				if ((idle && g_pendT >= 0.05f) || g_pendT >= 0.4f) {
+					SKSE::log::info("{}: reload after {:.2f}s ({})", g_pend->name, g_pendT, idle ? "attack done" : "timeout");
+					DoReload(g_pend);
+					g_pend = nullptr;
+				}
+			}
+		}
+		if (g_check) {
+			g_checkT += a_dt;
+			if (g_checkT >= 0.35f) {
+				g_checkT = 0.0f;
+				auto gun = g_check;
+				auto ammo = g_checkAmmo;
+				if (EquippedGun() != gun || !ammo) {
+					g_check = nullptr;
+				} else if (a_pc->GetCurrentAmmo() == ammo) {
+					SKSE::log::info("{}: reload ok, ammo equipped", gun->name);
+					g_check = nullptr;
+				} else if (++g_checkTries > 3) {
+					SKSE::log::info("{}: ammo still missing after 3 re-equips - giving up", gun->name);
+					g_check = nullptr;
+				} else {
+					SKSE::log::info("{}: ammo missing after reload -> re-equip ({})", gun->name, g_checkTries);
+					SKSE::GetTaskInterface()->AddTask([ammo]() {
+						auto pc = RE::PlayerCharacter::GetSingleton();
+						if (pc && !pc->GetCurrentAmmo()) {
+							g_reloading = true;
+							RE::ActorEquipManager::GetSingleton()->EquipObject(pc, ammo, nullptr, 1, nullptr, false, false, false);
+							g_reloading = false;
+						}
+					});
+				}
+			}
+		}
 	}
 
 	class Sink :
@@ -255,7 +324,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.2.6 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.2.7 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
