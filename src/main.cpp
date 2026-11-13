@@ -32,7 +32,7 @@ namespace
 
 	Gun g_guns[] = {
 		{ 0xA90, 6, "M29", 1 },
-		{ 0xAA0, 8, "M1911", 2, { 0.0f, -0.5f, 0.0f } },          // New Agent: 1st person a bit back
+		{ 0xAA0, 8, "M1911", 2, { 0.0f, -1.4f, 0.0f } },          // New Agent: 1st person back 1.4 (the spot the user liked)
 		{ 0xA50, 30, "K2", 3, {}, { -0.8f, 0.0f, 0.0f } },        // K2: 3rd person a bit to the gun's right
 		{ 0xAB0, 6, "SAA", 1 },                                   // Colt Single Action Army
 		{ 0xAC0, 13, "HiPower", 2 },                              // Browning Hi-Power
@@ -358,7 +358,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.3.0 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.3.1 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
