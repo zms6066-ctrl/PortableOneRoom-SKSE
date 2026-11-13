@@ -36,7 +36,7 @@ namespace
 		{ 0xA50, 30, "K2", 3, {}, { -0.8f, 0.0f, 0.0f } },        // K2: 3rd person a bit to the gun's right
 		{ 0xAB0, 6, "SAA", 1 },                                   // Colt Single Action Army
 		{ 0xAC0, 13, "HiPower", 2 },                              // Browning Hi-Power
-		{ 0xAD0, 5, "BFR", 4 },                                   // Magnum Research BFR: 5-shot revolver
+		{ 0xAD0, 5, "BFR", 4, {}, { 0.0f, -0.5f, 0.5f } },          // Magnum Research BFR: 5-shot; 3rd person a bit back and down
 	};
 
 	namespace Mech
@@ -360,7 +360,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.3.2 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.3.3 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
