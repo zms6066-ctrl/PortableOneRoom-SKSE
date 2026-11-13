@@ -23,6 +23,8 @@ namespace
 		int           mech;  // 0 none, 1 revolver (6), 2 pistol with slide, 3 rifle bolt, 4 revolver (5)
 		float         fp[3]{ 0, 0, 0 };  // PORAdjust offset in 1st person view (gun's own axes: x side, y muzzle)
 		float         tp[3]{ 0, 0, 0 };  // ... and in 3rd person view
+		float         fs{ 1.0f };        // PORAdjust scale, 1st person
+		float         ts{ 1.0f };        // ... 3rd person
 		RE::FormID    id{ 0 };
 		std::int32_t  fired{ 0 };
 	};
@@ -32,7 +34,7 @@ namespace
 
 	Gun g_guns[] = {
 		{ 0xA90, 6, "M29", 1 },
-		{ 0xAA0, 8, "M1911", 2, { 0.0f, -1.4f, 0.0f } },          // New Agent: 1st person back 1.4 (the spot the user liked)
+		{ 0xAA0, 8, "M1911", 2, { 0.0f, -1.4f, 0.0f }, { 0.1388f, -0.5264f, 0.2678f }, 1.0f, 0.93f },  // New Agent (old WAP ALSID): 1st back 1.4; 3rd 93% about the hand
 		{ 0xA50, 30, "K2", 3, {}, { -0.8f, 0.0f, 0.0f } },        // K2: 3rd person a bit to the gun's right
 		{ 0xAB0, 6, "SAA", 1 },                                   // Colt Single Action Army
 		{ 0xAC0, 13, "HiPower", 2 },                              // Browning Hi-Power
@@ -272,9 +274,11 @@ namespace
 				continue;
 			}
 			const float* o = fp ? gun->fp : gun->tp;
+			const float sc = fp ? gun->fs : gun->ts;
 			RE::NiPoint3 want{ o[0], o[1], o[2] };
-			if (n->local.translate.x != want.x || n->local.translate.y != want.y || n->local.translate.z != want.z) {
+			if (n->local.translate.x != want.x || n->local.translate.y != want.y || n->local.translate.z != want.z || n->local.scale != sc) {
 				n->local.translate = want;
+				n->local.scale = sc;
 				RE::NiUpdateData ud{};
 				n->Update(ud);
 			}
@@ -360,7 +364,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.3.4 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.3.5 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
