@@ -20,7 +20,7 @@ namespace
 		RE::FormID    local;
 		std::int32_t  size;
 		const char*   name;
-		int           mech;  // 0 none, 1 revolver, 2 pistol with slide, 3 rifle bolt
+		int           mech;  // 0 none, 1 revolver (6), 2 pistol with slide, 3 rifle bolt, 4 revolver (5)
 		float         fp[3]{ 0, 0, 0 };  // PORAdjust offset in 1st person view (gun's own axes: x side, y muzzle)
 		float         tp[3]{ 0, 0, 0 };  // ... and in 3rd person view
 		RE::FormID    id{ 0 };
@@ -36,6 +36,7 @@ namespace
 		{ 0xA50, 30, "K2", 3, {}, { -0.8f, 0.0f, 0.0f } },        // K2: 3rd person a bit to the gun's right
 		{ 0xAB0, 6, "SAA", 1 },                                   // Colt Single Action Army
 		{ 0xAC0, 13, "HiPower", 2 },                              // Browning Hi-Power
+		{ 0xAD0, 5, "BFR", 4 },                                   // Magnum Research BFR: 5-shot revolver
 	};
 
 	namespace Mech
@@ -67,10 +68,11 @@ namespace
 			if (t < 0.0f) {
 				return;
 			}
-			if (g_kind == 1) {
+			if (g_kind == 1 || g_kind == 4) {
 				constexpr float H = 30.0f;
+				const float step = g_kind == 4 ? 72.0f : 60.0f;   // 5-shot cylinder turns 72 deg per shot
 				a_hammer = t < 0.03f ? H * t / 0.03f : t < 0.12f ? H : H * (1.0f - Ease((t - 0.12f) / 0.28f));
-				a_cyl = t < 0.40f ? 60.0f * Ease((t - 0.12f) / 0.28f) : 0.0f;  // 6-fold symmetric: 60 deg == 0
+				a_cyl = t < 0.40f ? step * Ease((t - 0.12f) / 0.28f) : 0.0f;  // n-fold symmetric: one step == 0
 			} else if (g_kind == 2) {
 				constexpr float H = 50.0f, L = 2.5f;
 				a_hammer = t < 0.025f ? H * t / 0.025f : H * (1.0f - Ease((t - 0.025f) / 0.075f));
@@ -358,7 +360,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.3.1 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.3.2 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
