@@ -20,17 +20,22 @@ namespace
 		RE::FormID    local;
 		std::int32_t  size;
 		const char*   name;
-		int           mech;  // 0 none, 1 revolver, 2 pistol with slide
+		int           mech;  // 0 none, 1 revolver, 2 pistol with slide, 3 rifle bolt
+		float         fp[3]{ 0, 0, 0 };  // PORAdjust offset in 1st person view (gun's own axes: x side, y muzzle)
+		float         tp[3]{ 0, 0, 0 };  // ... and in 3rd person view
 		RE::FormID    id{ 0 };
 		std::int32_t  fired{ 0 };
 	};
 
 	void ReloadTick(RE::PlayerCharacter* a_pc, float a_dt);
+	void ViewTick(RE::PlayerCharacter* a_pc);
 
 	Gun g_guns[] = {
 		{ 0xA90, 6, "M29", 1 },
-		{ 0xAA0, 8, "M1911", 2 },
-		{ 0xA50, 30, "K2", 3 },
+		{ 0xAA0, 8, "M1911", 2, { 0.0f, -0.5f, 0.0f } },          // New Agent: 1st person a bit back
+		{ 0xA50, 30, "K2", 3, {}, { -0.8f, 0.0f, 0.0f } },        // K2: 3rd person a bit to the gun's right
+		{ 0xAB0, 6, "SAA", 1 },                                   // Colt Single Action Army
+		{ 0xAC0, 13, "HiPower", 2 },                              // Browning Hi-Power
 	};
 
 	namespace Mech
@@ -128,6 +133,7 @@ namespace
 				func(a_pc, a_dt);
 				Tick(a_pc, a_dt);
 				ReloadTick(a_pc, a_dt);
+				ViewTick(a_pc);
 			}
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
@@ -245,6 +251,34 @@ namespace
 		}
 	}
 
+	// Per-view placement: the same nif can need a slightly different spot in 1st and 3rd person (different hand
+	// animations). The gun nifs have a PORAdjust node; its local translation is set here for each view's 3D.
+	void ViewTick(RE::PlayerCharacter* a_pc)
+	{
+		auto gun = EquippedGun();
+		if (!gun || !a_pc) {
+			return;
+		}
+		static const RE::BSFixedString adj{ "PORAdjust" };
+		for (bool fp : { false, true }) {
+			auto root = a_pc->Get3D(fp);
+			if (!root) {
+				continue;
+			}
+			auto n = root->GetObjectByName(adj);
+			if (!n) {
+				continue;
+			}
+			const float* o = fp ? gun->fp : gun->tp;
+			RE::NiPoint3 want{ o[0], o[1], o[2] };
+			if (n->local.translate.x != want.x || n->local.translate.y != want.y || n->local.translate.z != want.z) {
+				n->local.translate = want;
+				RE::NiUpdateData ud{};
+				n->Update(ud);
+			}
+		}
+	}
+
 	class Sink :
 		public RE::BSTEventSink<RE::TESContainerChangedEvent>,
 		public RE::BSTEventSink<RE::TESEquipEvent>
@@ -324,7 +358,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.2.7 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.3.0 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
