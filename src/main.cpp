@@ -1,4 +1,5 @@
-// PortableOneRoomMag: magazines for the Portable One Room guns (S&W M29 6 rounds, Colt M1911 8 rounds, K2 30 rounds).
+// PortableOneRoomMag: magazines for the Portable One Room guns (S&W M29 6 rounds, Colt M1911 8 rounds, K2 30 rounds,
+// M1 Garand 8-round en-bloc clip: last shot -> clip "ping", operating rod stays back until the reload closes it).
 // Replaces the old Papyrus scripts (PORGun on the weapon + PORMagWatch effect). Those were attached to the
 // weapon itself, and a weapon taken out of a container sometimes never woke its script up, so no magazine.
 // Here everything is watched from the player side: whatever gun the player holds, wherever it came from.
@@ -20,11 +21,12 @@ namespace
 		RE::FormID    local;
 		std::int32_t  size;
 		const char*   name;
-		int           mech;  // 0 none, 1 revolver (6), 2 pistol with slide, 3 rifle bolt, 4 revolver (5)
+		int           mech;  // 0 none, 1 revolver (6), 2 pistol with slide, 3 rifle bolt, 4 revolver (5), 5 Garand op rod (locks back)
 		float         fp[3]{ 0, 0, 0 };  // PORAdjust offset in 1st person view (gun's own axes: x side, y muzzle)
 		float         tp[3]{ 0, 0, 0 };  // ... and in 3rd person view
 		float         fs{ 1.0f };        // PORAdjust scale, 1st person
 		float         ts{ 1.0f };        // ... 3rd person
+		float         fr[2]{ 0, 0 };     // PORAdjust rotation in 1st person (deg): pitch about x, yaw about z  (R = Rz(yaw) Rx(pitch))
 		RE::FormID    id{ 0 };
 		std::int32_t  fired{ 0 };
 	};
@@ -34,17 +36,26 @@ namespace
 
 	Gun g_guns[] = {
 		{ 0xA90, 6, "M29", 1 },
-		{ 0xAA0, 8, "M1911", 2, { 0.0f, -1.4f, 0.0f }, { 0.1388f, -0.5264f, 0.2678f }, 1.0f, 0.93f },  // New Agent (old WAP ALSID): 1st back 1.4; 3rd 93% about the hand
+		{ 0xAA0, 8, "M1911", 2, { 0.0f, -1.4f, 0.0f }, { 0.1983f, -0.7519f, 0.3826f }, 1.0f, 0.90f },  // New Agent (old WAP ALSID): 1st back 1.4; 3rd 90% about the hand
 		{ 0xA50, 30, "K2", 3, {}, { -0.8f, 0.0f, 0.0f } },        // K2: 3rd person a bit to the gun's right
 		{ 0xAB0, 6, "SAA", 1 },                                   // Colt Single Action Army
 		{ 0xAC0, 13, "HiPower", 2 },                              // Browning Hi-Power
 		{ 0xAD0, 5, "BFR", 4, {}, { 0.0f, 0.5f, -0.5f } },          // Magnum Research BFR: 5-shot; 3rd person a bit forward and up
+		// M1 Garand: 1st person sight line moved onto the DAR Rifles Kar98 / Mosin sight line (same Kar98 animations)
+		{ 0xAE0, 8, "Garand", 5, { -1.919f, 0.092f, 1.799f }, {}, 1.0f, 1.0f, { -0.631f, -0.34f } },
 	};
+
+	Gun* EquippedGun();
+	bool EquippedGunIsGarand();
 
 	namespace Mech
 	{
 		float g_t = -1.0f;  // seconds since the last shot, <0 = idle
 		int   g_kind = 0;
+		constexpr float kGarandL = 4.5f;       // op rod / bolt travel
+		constexpr float kGarandClose = 1.95f;  // reload: the hand lets the op rod go (Kar98 reload, s after the reload starts)
+		bool  g_locked = false;                // Garand: empty, op rod held back
+		float g_closeT = -1.0f;                // >=0: reload running, seconds
 
 		float Ease(float x) { x = std::clamp(x, 0.0f, 1.0f); return x * x * (3.0f - 2.0f * x); }
 
@@ -57,6 +68,8 @@ namespace
 			m.entry[2][0] = 0; m.entry[2][1] = 0; m.entry[2][2] = 1;
 			if (a_axis == 0) {  // gun side axis: hammer
 				m.entry[1][1] = c; m.entry[1][2] = -s; m.entry[2][1] = s; m.entry[2][2] = c;
+			} else if (a_axis == 2) {  // vertical axis (yaw)
+				m.entry[0][0] = c; m.entry[0][1] = -s; m.entry[1][0] = s; m.entry[1][1] = c;
 			} else {            // bore axis: cylinder
 				m.entry[0][0] = c; m.entry[0][2] = s; m.entry[2][0] = -s; m.entry[2][2] = c;
 			}
@@ -82,6 +95,8 @@ namespace
 			} else if (g_kind == 3) {  // K2: bolt carrier + charging handle, short and fast (fits full-auto)
 				constexpr float L = 2.2f;
 				a_slide = t < 0.025f ? -L * t / 0.025f : -L * (1.0f - Ease((t - 0.025f) / 0.065f));
+			} else if (g_kind == 5) {  // Garand: operating rod + bolt
+				a_slide = t < 0.025f ? -kGarandL * t / 0.025f : -kGarandL * (1.0f - Ease((t - 0.025f) / 0.065f));
 			}
 		}
 
@@ -90,6 +105,12 @@ namespace
 			static const RE::BSFixedString hammer{ "PORHammer" }, cyl{ "PORCylinder" }, slide{ "PORSlide" };
 			float h, c, sl;
 			Pose(t, h, c, sl);
+			if (g_kind == 5 && g_locked && (t < 0.0f || t >= 0.025f)) {
+				sl = -kGarandL;  // held open
+				if (g_closeT >= kGarandClose) {
+					sl = -kGarandL * (1.0f - Ease((g_closeT - kGarandClose) / 0.06f));  // slams home
+				}
+			}
 			RE::NiUpdateData ud{};
 			if (auto n = a_root->GetObjectByName(hammer)) {
 				n->local.rotate = Rot(0, h);
@@ -107,7 +128,32 @@ namespace
 
 		void Tick(RE::PlayerCharacter* a_pc, float a_dt)
 		{
-			if (g_t < 0.0f || !a_pc) {
+			if (!a_pc) {
+				return;
+			}
+			if (g_closeT >= 0.0f) {
+				g_closeT += a_dt;
+				if (g_closeT >= kGarandClose + 0.06f) {
+					g_closeT = -1.0f;
+					if (g_locked) {
+						g_locked = false;
+						for (bool fp : { false, true }) {
+							if (auto root = a_pc->Get3D(fp)) {
+								Apply(root, -1.0f);
+							}
+						}
+					}
+				}
+			}
+			if (g_locked && g_t < 0.0f && EquippedGunIsGarand()) {   // keep it open (the 3D can be rebuilt: view switch, redraw)
+				for (bool fp : { false, true }) {
+					if (auto root = a_pc->Get3D(fp)) {
+						Apply(root, -1.0f);
+					}
+				}
+				return;
+			}
+			if (g_t < 0.0f) {
 				return;
 			}
 			g_t += a_dt;
@@ -150,6 +196,22 @@ namespace
 	}
 
 	std::atomic_bool g_reloading{ false };
+	RE::BGSSoundDescriptorForm* g_ping{ nullptr };   // Garand en-bloc clip ejection
+
+	void PlayPing()
+	{
+		auto pc = RE::PlayerCharacter::GetSingleton();
+		auto am = RE::BSAudioManager::GetSingleton();
+		if (!g_ping || !pc || !am) {
+			return;
+		}
+		RE::BSSoundHandle h;
+		if (am->GetSoundHandle(h, g_ping)) {
+			h.SetPosition(pc->GetPosition());
+			h.SetObjectToFollow(pc->Get3D());
+			h.Play();
+		}
+	}
 
 	Gun* EquippedGun()
 	{
@@ -167,6 +229,12 @@ namespace
 			}
 		}
 		return nullptr;
+	}
+
+	bool EquippedGunIsGarand()
+	{
+		auto g = EquippedGun();
+		return g && g->mech == 5;
 	}
 
 	// Magazine empty -> reload. The old way (queued unequip + equip of the ammo straight after the last shot) broke
@@ -203,6 +271,9 @@ namespace
 			em->UnequipObject(pc, ammo, nullptr, 1, nullptr, false, false, false);
 			em->EquipObject(pc, ammo, nullptr, 1, nullptr, false, false, false);
 			g_reloading = false;
+			if (a_gun->mech == 5 && Mech::g_locked) {
+				Mech::g_closeT = 0.0f;  // the reload animation starts now; its op rod release closes the rifle
+			}
 			g_check = a_gun;
 			g_checkAmmo = ammo;
 			g_checkT = 0.0f;
@@ -276,8 +347,16 @@ namespace
 			const float* o = fp ? gun->fp : gun->tp;
 			const float sc = fp ? gun->fs : gun->ts;
 			RE::NiPoint3 want{ o[0], o[1], o[2] };
-			if (n->local.translate.x != want.x || n->local.translate.y != want.y || n->local.translate.z != want.z || n->local.scale != sc) {
+			RE::NiMatrix3 rot = fp ? Mech::Rot(2, gun->fr[1]) * Mech::Rot(0, gun->fr[0]) : Mech::Rot(0, 0.0f);
+			bool same = n->local.translate.x == want.x && n->local.translate.y == want.y && n->local.translate.z == want.z && n->local.scale == sc;
+			for (int i = 0; i < 3 && same; ++i) {
+				for (int j = 0; j < 3; ++j) {
+					same = same && n->local.rotate.entry[i][j] == rot.entry[i][j];
+				}
+			}
+			if (!same) {
 				n->local.translate = want;
+				n->local.rotate = rot;
 				n->local.scale = sc;
 				RE::NiUpdateData ud{};
 				n->Update(ud);
@@ -315,6 +394,11 @@ namespace
 			Mech::Shot(gun->mech);
 			if (gun->fired >= gun->size) {
 				gun->fired = 0;
+				if (gun->mech == 5) {
+					Mech::g_locked = true;   // last round: the clip flies out, the op rod stays back
+					Mech::g_closeT = -1.0f;
+					PlayPing();
+				}
 				Reload(gun);
 			}
 			return RE::BSEventNotifyControl::kContinue;
@@ -328,12 +412,17 @@ namespace
 			for (auto& g : g_guns) {
 				if (a_ev->baseObject == g.id) {
 					g.fired = 0;  // gun (re)equipped: full magazine
+					Mech::g_locked = false;
+					Mech::g_closeT = -1.0f;
 				}
 			}
 			auto form = RE::TESForm::LookupByID(a_ev->baseObject);
 			if (form && form->Is(RE::FormType::Ammo)) {
 				if (auto gun = EquippedGun()) {
 					gun->fired = 0;  // ammo equipped by hand = manual reload
+					if (gun->mech == 5 && Mech::g_locked && Mech::g_closeT < 0.0f) {
+						Mech::g_closeT = 0.0f;
+					}
 				}
 			}
 			return RE::BSEventNotifyControl::kContinue;
@@ -348,6 +437,9 @@ namespace
 			g.id = form ? form->GetFormID() : 0;
 			SKSE::log::info("{}: form {:08X} magazine {}", g.name, g.id, g.size);
 		}
+		auto ping = dh ? dh->LookupForm(0xAE5, kPlugin) : nullptr;
+		g_ping = ping ? ping->As<RE::BGSSoundDescriptorForm>() : nullptr;
+		SKSE::log::info("Garand clip ping sound: {}", g_ping ? "ok" : "missing");
 		auto src = RE::ScriptEventSourceHolder::GetSingleton();
 		src->AddEventSink<RE::TESContainerChangedEvent>(Sink::Get());
 		src->AddEventSink<RE::TESEquipEvent>(Sink::Get());
@@ -358,13 +450,15 @@ namespace
 		for (auto& g : g_guns) {
 			g.fired = 0;
 		}
+		Mech::g_locked = false;
+		Mech::g_closeT = -1.0f;
 	}
 }
 
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.3.5 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.4.0 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
