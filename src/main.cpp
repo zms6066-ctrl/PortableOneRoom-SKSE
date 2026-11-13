@@ -248,10 +248,31 @@ namespace
 	float          g_checkT{ 0.0f };
 	int            g_checkTries{ 0 };
 
+	RE::TESAmmo*   g_unloaded{ nullptr };  // Garand: ammo taken off at the last shot (empty rifle: no 9th shot)
+
 	void Reload(Gun* a_gun)
 	{
 		g_pend = a_gun;
 		g_pendT = 0.0f;
+	}
+
+	// Garand: the clip is gone after the 8th shot, so take the ammo off right away. A fast click can no longer start a
+	// 9th attack that the reload would then cut in half ("no bolts" + reload motion, 1.4.0 with quick clicks).
+	void Unload(Gun* a_gun)
+	{
+		SKSE::GetTaskInterface()->AddTask([a_gun]() {
+			auto pc = RE::PlayerCharacter::GetSingleton();
+			if (!pc || EquippedGun() != a_gun) {
+				return;
+			}
+			if (auto ammo = pc->GetCurrentAmmo()) {
+				g_unloaded = ammo;
+				g_reloading = true;
+				RE::ActorEquipManager::GetSingleton()->UnequipObject(pc, ammo, nullptr, 1, nullptr, false, false, false);
+				g_reloading = false;
+				SKSE::log::info("{}: clip empty - ammo off until the reload", a_gun->name);
+			}
+		});
 	}
 
 	void DoReload(Gun* a_gun)
@@ -262,13 +283,20 @@ namespace
 				return;
 			}
 			auto ammo = pc->GetCurrentAmmo();
+			const bool unloaded = !ammo && g_unloaded && a_gun->mech == 5;
+			if (unloaded) {
+				ammo = g_unloaded;
+			}
+			g_unloaded = nullptr;
 			if (!ammo) {
 				SKSE::log::info("{}: reload - no ammo equipped", a_gun->name);
 				return;
 			}
 			auto em = RE::ActorEquipManager::GetSingleton();
 			g_reloading = true;
-			em->UnequipObject(pc, ammo, nullptr, 1, nullptr, false, false, false);
+			if (!unloaded) {
+				em->UnequipObject(pc, ammo, nullptr, 1, nullptr, false, false, false);
+			}
 			em->EquipObject(pc, ammo, nullptr, 1, nullptr, false, false, false);
 			g_reloading = false;
 			if (a_gun->mech == 5 && Mech::g_locked) {
@@ -287,11 +315,24 @@ namespace
 		if (g_pend) {
 			if (EquippedGun() != g_pend) {
 				g_pend = nullptr;
+				if (auto ammo = g_unloaded) {   // Garand put away while empty: give the ammo back (no animation needed)
+					g_unloaded = nullptr;
+					SKSE::GetTaskInterface()->AddTask([ammo]() {
+						auto pc = RE::PlayerCharacter::GetSingleton();
+						if (pc && !pc->GetCurrentAmmo()) {
+							g_reloading = true;
+							RE::ActorEquipManager::GetSingleton()->EquipObject(pc, ammo, nullptr, 1, nullptr, false, false, false);
+							g_reloading = false;
+						}
+					});
+				}
 			} else {
 				g_pendT += a_dt;
-				const bool idle = a_pc->AsActorState()->GetAttackState() == RE::ATTACK_STATE_ENUM::kNone;
-				if ((idle && g_pendT >= 0.05f) || g_pendT >= 0.4f) {
-					SKSE::log::info("{}: reload after {:.2f}s ({})", g_pend->name, g_pendT, idle ? "attack done" : "timeout");
+				const auto st = a_pc->AsActorState()->GetAttackState();
+				const bool idle = st == RE::ATTACK_STATE_ENUM::kNone;
+				const float limit = g_pend->mech == 5 ? 1.5f : 0.4f;   // Garand: no ammo meanwhile, so waiting is safe
+				if ((idle && g_pendT >= 0.05f) || g_pendT >= limit) {
+					SKSE::log::info("{}: reload after {:.2f}s ({}, attack state {})", g_pend->name, g_pendT, idle ? "attack done" : "timeout", static_cast<std::uint32_t>(st));
 					DoReload(g_pend);
 					g_pend = nullptr;
 				}
@@ -398,6 +439,7 @@ namespace
 					Mech::g_locked = true;   // last round: the clip flies out, the op rod stays back
 					Mech::g_closeT = -1.0f;
 					PlayPing();
+					Unload(gun);
 				}
 				Reload(gun);
 			}
@@ -452,13 +494,14 @@ namespace
 		}
 		Mech::g_locked = false;
 		Mech::g_closeT = -1.0f;
+		g_unloaded = nullptr;
 	}
 }
 
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.4.0 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.4.1 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
