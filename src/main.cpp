@@ -248,7 +248,16 @@ namespace
 	float          g_checkT{ 0.0f };
 	int            g_checkTries{ 0 };
 
-	RE::TESAmmo*   g_unloaded{ nullptr };  // Garand: ammo taken off at the last shot (empty rifle: no 9th shot)
+	RE::TESAmmo*   g_unloaded{ nullptr };
+
+	// all of the ammo in the inventory: equipping only 1 (1.4.1/1.4.2 after the Garand unload) left exactly one round
+	// equipped, so the 1st shot of the new clip used it up -> "no bolts" + a reload motion after one shot
+	std::int32_t AmmoCount(RE::PlayerCharacter* a_pc, RE::TESAmmo* a_ammo)
+	{
+		auto inv = a_pc->GetInventoryCounts([a_ammo](RE::TESBoundObject& o) { return &o == a_ammo; });
+		auto it = inv.find(a_ammo);
+		return it != inv.end() && it->second > 0 ? it->second : 1;
+	}  // Garand: ammo taken off at the last shot (empty rifle: no 9th shot)
 
 	void Reload(Gun* a_gun)
 	{
@@ -268,7 +277,7 @@ namespace
 			if (auto ammo = pc->GetCurrentAmmo()) {
 				g_unloaded = ammo;
 				g_reloading = true;
-				RE::ActorEquipManager::GetSingleton()->UnequipObject(pc, ammo, nullptr, 1, nullptr, false, false, false);
+				RE::ActorEquipManager::GetSingleton()->UnequipObject(pc, ammo, nullptr, AmmoCount(pc, ammo), nullptr, false, false, false);
 				g_reloading = false;
 				SKSE::log::info("{}: clip empty - ammo off until the reload", a_gun->name);
 			}
@@ -297,7 +306,7 @@ namespace
 			if (!unloaded) {
 				em->UnequipObject(pc, ammo, nullptr, 1, nullptr, false, false, false);
 			}
-			em->EquipObject(pc, ammo, nullptr, 1, nullptr, false, false, false);
+			em->EquipObject(pc, ammo, nullptr, unloaded ? AmmoCount(pc, ammo) : 1, nullptr, false, false, false);
 			g_reloading = false;
 			if (a_gun->mech == 5 && Mech::g_locked) {
 				Mech::g_closeT = 0.0f;  // the reload animation starts now; its op rod release closes the rifle
@@ -321,7 +330,7 @@ namespace
 						auto pc = RE::PlayerCharacter::GetSingleton();
 						if (pc && !pc->GetCurrentAmmo()) {
 							g_reloading = true;
-							RE::ActorEquipManager::GetSingleton()->EquipObject(pc, ammo, nullptr, 1, nullptr, false, false, false);
+							RE::ActorEquipManager::GetSingleton()->EquipObject(pc, ammo, nullptr, AmmoCount(pc, ammo), nullptr, false, false, false);
 							g_reloading = false;
 						}
 					});
@@ -347,7 +356,7 @@ namespace
 				if (EquippedGun() != gun || !ammo) {
 					g_check = nullptr;
 				} else if (a_pc->GetCurrentAmmo() == ammo) {
-					SKSE::log::info("{}: reload ok, ammo equipped", gun->name);
+					SKSE::log::info("{}: reload ok, ammo equipped ({} in the inventory)", gun->name, AmmoCount(a_pc, ammo));
 					g_check = nullptr;
 				} else if (++g_checkTries > 3) {
 					SKSE::log::info("{}: ammo still missing after 3 re-equips - giving up", gun->name);
@@ -358,7 +367,7 @@ namespace
 						auto pc = RE::PlayerCharacter::GetSingleton();
 						if (pc && !pc->GetCurrentAmmo()) {
 							g_reloading = true;
-							RE::ActorEquipManager::GetSingleton()->EquipObject(pc, ammo, nullptr, 1, nullptr, false, false, false);
+							RE::ActorEquipManager::GetSingleton()->EquipObject(pc, ammo, nullptr, AmmoCount(pc, ammo), nullptr, false, false, false);
 							g_reloading = false;
 						}
 					});
@@ -542,7 +551,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.4.2 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.4.3 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
