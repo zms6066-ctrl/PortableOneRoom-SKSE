@@ -47,13 +47,15 @@ namespace
 
 	Gun* EquippedGun();
 	bool EquippedGunIsGarand();
+	struct ClipSnd { static void Play(); };
 
 	namespace Mech
 	{
 		float g_t = -1.0f;  // seconds since the last shot, <0 = idle
 		int   g_kind = 0;
 		constexpr float kGarandL = 4.5f;       // op rod / bolt travel
-		constexpr float kGarandClose = 1.95f;  // reload: the hand lets the op rod go (Kar98 reload, s after the reload starts)
+		constexpr float kGarandClose = 1.95f;
+		constexpr float kGarandClipSnd = kGarandClose - 0.18f;  // reload: the hand lets the op rod go (Kar98 reload, s after the reload starts)
 		bool  g_locked = false;                // Garand: empty, op rod held back
 		float g_closeT = -1.0f;                // >=0: reload running, seconds
 
@@ -132,7 +134,11 @@ namespace
 				return;
 			}
 			if (g_closeT >= 0.0f) {
+				const float before = g_closeT;
 				g_closeT += a_dt;
+				if (before < kGarandClipSnd && g_closeT >= kGarandClipSnd) {
+					ClipSnd::Play();  // its loudest click (0.18 s in) lands on the op rod slam
+				}
 				if (g_closeT >= kGarandClose + 0.06f) {
 					g_closeT = -1.0f;
 					if (g_locked) {
@@ -196,17 +202,18 @@ namespace
 	}
 
 	std::atomic_bool g_reloading{ false };
-	RE::BGSSoundDescriptorForm* g_ping{ nullptr };   // Garand en-bloc clip ejection
+	RE::BGSSoundDescriptorForm* g_ping{ nullptr };     // Garand en-bloc clip ejection
+	RE::BGSSoundDescriptorForm* g_clipIn{ nullptr };   // Garand clip in + op rod slam (FO76 'This Machine' reload pt2)
 
-	void PlayPing()
+	void PlaySnd(RE::BGSSoundDescriptorForm* a_snd)
 	{
 		auto pc = RE::PlayerCharacter::GetSingleton();
 		auto am = RE::BSAudioManager::GetSingleton();
-		if (!g_ping || !pc || !am) {
+		if (!a_snd || !pc || !am) {
 			return;
 		}
 		RE::BSSoundHandle h;
-		if (am->GetSoundHandle(h, g_ping)) {
+		if (am->GetSoundHandle(h, a_snd)) {
 			h.SetPosition(pc->GetPosition());
 			h.SetObjectToFollow(pc->Get3D());
 			h.Play();
@@ -230,6 +237,8 @@ namespace
 		}
 		return nullptr;
 	}
+
+	void ClipSnd::Play() { PlaySnd(g_clipIn); }
 
 	bool EquippedGunIsGarand()
 	{
@@ -483,7 +492,7 @@ namespace
 				if (gun->mech == 5) {
 					Mech::g_locked = true;   // last round: the clip flies out, the op rod stays back
 					Mech::g_closeT = -1.0f;
-					PlayPing();
+					PlaySnd(g_ping);
 					Unload(gun);
 				}
 				Reload(gun);
@@ -530,7 +539,9 @@ namespace
 		}
 		auto ping = dh ? dh->LookupForm(0xAE5, kPlugin) : nullptr;
 		g_ping = ping ? ping->As<RE::BGSSoundDescriptorForm>() : nullptr;
-		SKSE::log::info("Garand clip ping sound: {}", g_ping ? "ok" : "missing");
+		auto clip = dh ? dh->LookupForm(0xAE6, kPlugin) : nullptr;
+		g_clipIn = clip ? clip->As<RE::BGSSoundDescriptorForm>() : nullptr;
+		SKSE::log::info("Garand clip ping sound: {}, reload sound: {}", g_ping ? "ok" : "missing", g_clipIn ? "ok" : "missing");
 		auto src = RE::ScriptEventSourceHolder::GetSingleton();
 		src->AddEventSink<RE::TESContainerChangedEvent>(Sink::Get());
 		src->AddEventSink<RE::TESEquipEvent>(Sink::Get());
@@ -551,7 +562,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.4.3 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.4.4 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
