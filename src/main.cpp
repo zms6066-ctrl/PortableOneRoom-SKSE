@@ -405,6 +405,39 @@ namespace
 		}
 	}
 
+	// diagnostics (Garand only): every animation event of the player with time and attack state, to see which clip runs
+	class AnimLog : public RE::BSTEventSink<RE::BSAnimationGraphEvent>
+	{
+	public:
+		static AnimLog* Get()
+		{
+			static AnimLog s;
+			return &s;
+		}
+		RE::BSEventNotifyControl ProcessEvent(const RE::BSAnimationGraphEvent* a_ev, RE::BSTEventSource<RE::BSAnimationGraphEvent>*) override
+		{
+			if (!a_ev || !EquippedGunIsGarand()) {
+				return RE::BSEventNotifyControl::kContinue;
+			}
+			const std::string_view tag = a_ev->tag.c_str() ? a_ev->tag.c_str() : "";
+			if (tag.starts_with("Foot") || tag.starts_with("SoundPlay.FS") || tag == "TDM_" || tag.empty()) {
+				return RE::BSEventNotifyControl::kContinue;
+			}
+			auto pc = RE::PlayerCharacter::GetSingleton();
+			auto ammo = pc ? pc->GetCurrentAmmo() : nullptr;
+			SKSE::log::info("  anim {} [{}] state {} ammo {}", tag, a_ev->payload.c_str() ? a_ev->payload.c_str() : "",
+				pc ? static_cast<std::uint32_t>(pc->AsActorState()->GetAttackState()) : 99u, ammo ? "on" : "off");
+			return RE::BSEventNotifyControl::kContinue;
+		}
+		void Attach()
+		{
+			if (auto pc = RE::PlayerCharacter::GetSingleton()) {
+				pc->RemoveAnimationGraphEventSink(this);
+				pc->AddAnimationGraphEventSink(this);
+			}
+		}
+	};
+
 	class Sink :
 		public RE::BSTEventSink<RE::TESContainerChangedEvent>,
 		public RE::BSTEventSink<RE::TESEquipEvent>
@@ -433,6 +466,9 @@ namespace
 			}
 			gun->fired += a_ev->itemCount;
 			Mech::Shot(gun->mech);
+			if (gun->mech == 5) {
+				SKSE::log::info("{}: shot {}/{} (attack state {})", gun->name, gun->fired, gun->size, static_cast<std::uint32_t>(pc->AsActorState()->GetAttackState()));
+			}
 			if (gun->fired >= gun->size) {
 				gun->fired = 0;
 				if (gun->mech == 5) {
@@ -453,6 +489,10 @@ namespace
 			}
 			for (auto& g : g_guns) {
 				if (a_ev->baseObject == g.id) {
+					if (g.mech == 5) {
+						AnimLog::Get()->Attach();
+						SKSE::log::info("{}: equipped", g.name);
+					}
 					g.fired = 0;  // gun (re)equipped: full magazine
 					Mech::g_locked = false;
 					Mech::g_closeT = -1.0f;
@@ -495,13 +535,14 @@ namespace
 		Mech::g_locked = false;
 		Mech::g_closeT = -1.0f;
 		g_unloaded = nullptr;
+		AnimLog::Get()->Attach();
 	}
 }
 
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.4.1 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.4.2 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
