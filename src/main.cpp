@@ -47,7 +47,7 @@ namespace
 
 	Gun* EquippedGun();
 	bool EquippedGunIsGarand();
-	struct ClipSnd { static void Play(); };
+	struct ClipSnd { static void Play(); static void Cylinder(); };
 
 	namespace Mech
 	{
@@ -162,7 +162,11 @@ namespace
 			if (g_t < 0.0f) {
 				return;
 			}
+			const float before = g_t;
 			g_t += a_dt;
+			if (g_kind == 4 && before < 0.34f && g_t >= 0.34f) {
+				ClipSnd::Cylinder();  // BFR: the cylinder locks into the next chamber (it turns 0.12-0.40 s)
+			}
 			const bool done = g_t > 0.5f;
 			for (bool fp : { false, true }) {
 				if (auto root = a_pc->Get3D(fp)) {
@@ -203,7 +207,8 @@ namespace
 
 	std::atomic_bool g_reloading{ false };
 	RE::BGSSoundDescriptorForm* g_ping{ nullptr };     // Garand en-bloc clip ejection
-	RE::BGSSoundDescriptorForm* g_clipIn{ nullptr };   // Garand clip in + op rod slam (FO76 'This Machine' reload pt2)
+	RE::BGSSoundDescriptorForm* g_clipIn{ nullptr };
+	RE::BGSSoundDescriptorForm* g_bfrCyl{ nullptr };   // BFR cylinder click   // Garand clip in + op rod slam (FO76 'This Machine' reload pt2)
 
 	void PlaySnd(RE::BGSSoundDescriptorForm* a_snd)
 	{
@@ -239,6 +244,7 @@ namespace
 	}
 
 	void ClipSnd::Play() { PlaySnd(g_clipIn); }
+	void ClipSnd::Cylinder() { PlaySnd(g_bfrCyl); }
 
 	bool EquippedGunIsGarand()
 	{
@@ -541,7 +547,9 @@ namespace
 		g_ping = ping ? ping->As<RE::BGSSoundDescriptorForm>() : nullptr;
 		auto clip = dh ? dh->LookupForm(0xAE6, kPlugin) : nullptr;
 		g_clipIn = clip ? clip->As<RE::BGSSoundDescriptorForm>() : nullptr;
-		SKSE::log::info("Garand clip ping sound: {}, reload sound: {}", g_ping ? "ok" : "missing", g_clipIn ? "ok" : "missing");
+		auto cyl = dh ? dh->LookupForm(0xAD5, kPlugin) : nullptr;
+		g_bfrCyl = cyl ? cyl->As<RE::BGSSoundDescriptorForm>() : nullptr;
+		SKSE::log::info("Garand clip ping sound: {}, reload sound: {}; BFR cylinder: {}", g_ping ? "ok" : "missing", g_clipIn ? "ok" : "missing", g_bfrCyl ? "ok" : "missing");
 		auto src = RE::ScriptEventSourceHolder::GetSingleton();
 		src->AddEventSink<RE::TESContainerChangedEvent>(Sink::Get());
 		src->AddEventSink<RE::TESEquipEvent>(Sink::Get());
@@ -562,7 +570,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.4.4 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.4.5 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
