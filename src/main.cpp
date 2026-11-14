@@ -468,14 +468,46 @@ namespace
 			return st == RE::WEAPON_STATE::kDrawn;
 		}
 
+		int g_logLeft = 40;   // diagnostics: first input events the handler sees
+
+		// returns true when the event is the block button with the Garand drawn (then it is ours)
+		bool Take(RE::InputEvent* a_event, const char* a_where)
+		{
+			if (!a_event || a_event->GetEventType() != RE::INPUT_EVENT_TYPE::kButton) {
+				return false;
+			}
+			auto btn = static_cast<RE::ButtonEvent*>(a_event);
+			auto ue = RE::UserEvents::GetSingleton();
+			const auto& name = btn->QUserEvent();
+			const bool block = ue && name == ue->leftAttack;
+			const bool ok = block && Allowed(RE::PlayerCharacter::GetSingleton());
+			if (g_logLeft > 0 && (block || name == (ue ? ue->rightAttack : name))) {
+				--g_logLeft;
+				SKSE::log::info("  input {} '{}' value {:.1f} held {:.2f} -> {}", a_where, name.c_str() ? name.c_str() : "", btn->Value(), btn->HeldDuration(), ok ? "ADS" : "game");
+			}
+			if (ok) {
+				g_held = btn->IsPressed();
+			}
+			return ok;
+		}
+
+		struct CanProcess
+		{
+			static bool thunk(RE::AttackBlockHandler* a_this, RE::InputEvent* a_event)
+			{
+				if (Take(a_event, "check")) {
+					return false;  // swallowed: no block / bash with the rifle drawn
+				}
+				return func(a_this, a_event);
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
 		struct Button
 		{
 			static void thunk(RE::AttackBlockHandler* a_this, RE::ButtonEvent* a_event, RE::PlayerControlsData* a_data)
 			{
-				auto ue = RE::UserEvents::GetSingleton();
-				if (a_event && ue && a_event->QUserEvent() == ue->leftAttack && Allowed(RE::PlayerCharacter::GetSingleton())) {
-					g_held = a_event->IsPressed();
-					return;  // swallowed: no block / bash with the rifle
+				if (Take(a_event, "button")) {
+					return;
 				}
 				func(a_this, a_event, a_data);
 			}
@@ -485,7 +517,9 @@ namespace
 		void Install()
 		{
 			REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_AttackBlockHandler[0] };
+			CanProcess::func = vtbl.write_vfunc(0x1, CanProcess::thunk);
 			Button::func = vtbl.write_vfunc(REL::Module::IsVR() ? 0x6 : 0x4, Button::thunk);
+			SKSE::log::info("ADS: block handler hooked (vtable {:X})", vtbl.address());
 		}
 
 		void Load()
@@ -749,7 +783,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S.%e] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.5.0 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.5.1 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 	ADS::Install();
 
