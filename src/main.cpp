@@ -44,8 +44,7 @@ namespace
 		{ 0xAB0, 6, "SAA", 1 },                                   // Colt Single Action Army
 		{ 0xAC0, 13, "HiPower", 2 },                              // Browning Hi-Power
 		{ 0xAD0, 5, "BFR", 4, {}, { 0.0f, 0.5f, -0.5f } },          // Magnum Research BFR: 5-shot; 3rd person a bit forward and up
-		// M1 Garand: 1st person sight line moved onto the DAR Rifles Kar98 / Mosin sight line (same Kar98 animations)
-		{ 0xAE0, 8, "Garand", 5, { -1.919f, 0.092f, 1.799f }, {}, 1.0f, 1.0f, { -0.631f, -0.34f } },
+		// (M1 Garand removed in 1.6.0; its mechanism code - kind 5, ADS - stays but is unused)
 	};
 
 	Gun* EquippedGun();
@@ -760,8 +759,7 @@ namespace
 		g_clipIn = clip ? clip->As<RE::BGSSoundDescriptorForm>() : nullptr;
 		auto cyl = dh ? dh->LookupForm(0xAD5, kPlugin) : nullptr;
 		g_bfrCyl = cyl ? cyl->As<RE::BGSSoundDescriptorForm>() : nullptr;
-		ADS::Load();
-		SKSE::log::info("Garand clip ping sound: {}, reload sound: {}; BFR cylinder: {}", g_ping ? "ok" : "missing", g_clipIn ? "ok" : "missing", g_bfrCyl ? "ok" : "missing");
+		SKSE::log::info("BFR cylinder sound: {}", g_bfrCyl ? "ok" : "missing");
 		auto src = RE::ScriptEventSourceHolder::GetSingleton();
 		src->AddEventSink<RE::TESContainerChangedEvent>(Sink::Get());
 		src->AddEventSink<RE::TESEquipEvent>(Sink::Get());
@@ -783,9 +781,8 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S.%e] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.5.1 - runtime {}", a_skse->RuntimeVersion().string());
-	Mech::Install();
-	ADS::Install();
+	SKSE::log::info("PortableOneRoomMag 1.6.0 - runtime {}", a_skse->RuntimeVersion().string());
+	Mech::Install();   // 1.6.0: ADS::Install() no longer called (Garand removed) - the block button is left alone
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
 		switch (a_msg->type) {
