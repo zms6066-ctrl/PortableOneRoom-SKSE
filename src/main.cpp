@@ -35,6 +35,7 @@ namespace
 
 	void ReloadTick(RE::PlayerCharacter* a_pc, float a_dt);
 	void ViewTick(RE::PlayerCharacter* a_pc);
+	namespace ADS { void Tick(RE::PlayerCharacter* a_pc, float a_dt); void Install(); }
 
 	Gun g_guns[] = {
 		{ 0xA90, 6, "M29", 1 },
@@ -202,6 +203,7 @@ namespace
 				func(a_pc, a_dt);
 				Tick(a_pc, a_dt);
 				ReloadTick(a_pc, a_dt);
+				ADS::Tick(a_pc, a_dt);
 				ViewTick(a_pc);
 			}
 			static inline REL::Relocation<decltype(thunk)> func;
@@ -438,6 +440,159 @@ namespace
 		}
 	}
 
+	// ---------------------------------------------------------------------------------------------------------------
+	// ADS (aim down sights), Fallout style, Garand only for now (1.5.0):
+	//  - right mouse / block ("Left Attack/Block") is taken while the Garand is drawn: no bash, no block
+	//  - held -> global PORAimDown (AE7) = 1; OAR submod "GarandADS" (interruptible) swaps in the shouldered set,
+	//    released -> 0, the hip set (rifle low, shots fired from there)
+	//  - view zooms in a bit; Eagle Eye: more zoom + 10 stamina/s (as vanilla), Steady Hand 1/2: time 75%/50%
+	namespace ADS
+	{
+		RE::TESGlobal* g_global{ nullptr };
+		RE::BGSPerk*   g_eagleEye{ nullptr };
+		RE::BGSPerk*   g_steady1{ nullptr };
+		RE::BGSPerk*   g_steady2{ nullptr };
+		std::atomic_bool g_held{ false };
+		bool  g_on = false;        // ADS state applied
+		bool  g_zoomOK = true;     // false after running out of stamina (until released)
+		float g_baseFOV = 0.0f;    // world FOV before zooming, 0 = not zoomed
+		float g_zoom = 0.0f;       // 0..1 eased
+		bool  g_slowed = false;
+
+		bool Allowed(RE::PlayerCharacter* a_pc)
+		{
+			if (!a_pc || !EquippedGunIsGarand()) {
+				return false;
+			}
+			const auto st = a_pc->AsActorState()->GetWeaponState();
+			return st == RE::WEAPON_STATE::kDrawn;
+		}
+
+		struct Button
+		{
+			static void thunk(RE::AttackBlockHandler* a_this, RE::ButtonEvent* a_event, RE::PlayerControlsData* a_data)
+			{
+				auto ue = RE::UserEvents::GetSingleton();
+				if (a_event && ue && a_event->QUserEvent() == ue->leftAttack && Allowed(RE::PlayerCharacter::GetSingleton())) {
+					g_held = a_event->IsPressed();
+					return;  // swallowed: no block / bash with the rifle
+				}
+				func(a_this, a_event, a_data);
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		void Install()
+		{
+			REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_AttackBlockHandler[0] };
+			Button::func = vtbl.write_vfunc(REL::Module::IsVR() ? 0x6 : 0x4, Button::thunk);
+		}
+
+		void Load()
+		{
+			auto dh = RE::TESDataHandler::GetSingleton();
+			auto g = dh ? dh->LookupForm(0xAE7, kPlugin) : nullptr;
+			g_global = g ? g->As<RE::TESGlobal>() : nullptr;
+			auto perk = [](RE::FormID id) { auto f = RE::TESForm::LookupByID(id); return f ? f->As<RE::BGSPerk>() : nullptr; };
+			g_eagleEye = perk(0x58F61);
+			g_steady1 = perk(0x103ADA);
+			g_steady2 = perk(0x103ADB);
+			SKSE::log::info("ADS: global {}, Eagle Eye {}, Steady Hand {}/{}", g_global ? "ok" : "missing", g_eagleEye ? "ok" : "-", g_steady1 ? "ok" : "-", g_steady2 ? "ok" : "-");
+		}
+
+		void SetSlow(float a_mult)
+		{
+			if (auto t = RE::BSTimer::GetSingleton()) {
+				t->SetGlobalTimeMultiplier(a_mult, true);
+			}
+		}
+
+		void Tick(RE::PlayerCharacter* a_pc, float a_dt)
+		{
+			auto ui = RE::UI::GetSingleton();
+			if (ui && ui->GameIsPaused()) {
+				return;
+			}
+			const bool allowed = Allowed(a_pc);
+			if (!allowed) {
+				g_held = false;
+			}
+			const bool want = allowed && g_held;
+			if (want != g_on) {
+				g_on = want;
+				g_zoomOK = true;
+				if (g_global) {
+					g_global->value = want ? 1.0f : 0.0f;
+				}
+				SKSE::log::info("ADS {}", want ? "on" : "off");
+			}
+			auto cam = RE::PlayerCamera::GetSingleton();
+			if (!cam || !a_pc) {
+				return;
+			}
+			const bool eagle = g_eagleEye && a_pc->HasPerk(g_eagleEye);
+			auto av = a_pc->AsActorValueOwner();
+			if (g_on && eagle && g_zoomOK && av) {   // vanilla Eagle Eye cost: 10 stamina per second while zoomed
+				const float real = a_dt / std::max(0.1f, RE::BSTimer::QGlobalTimeMultiplier());
+				av->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kStamina, -10.0f * real);
+				if (av->GetActorValue(RE::ActorValue::kStamina) <= 0.0f) {
+					g_zoomOK = false;
+				}
+			}
+			const bool zoomed = g_on && g_zoomOK;
+			const float target = zoomed ? 1.0f : 0.0f;
+			const float realDt = a_dt / std::max(0.1f, RE::BSTimer::QGlobalTimeMultiplier());
+			const float step = realDt / 0.15f;
+			g_zoom = g_zoom < target ? std::min(target, g_zoom + step) : std::max(target, g_zoom - step);
+			if (g_zoom > 0.0f) {
+				if (g_baseFOV <= 0.0f) {
+					g_baseFOV = cam->GetRuntimeData2().worldFOV;
+				}
+				const float k = eagle ? 0.62f : 0.85f;   // FOV multiplier at full zoom
+				const float e = g_zoom * g_zoom * (3.0f - 2.0f * g_zoom);
+				cam->GetRuntimeData2().worldFOV = g_baseFOV * (1.0f - (1.0f - k) * e);
+			} else if (g_baseFOV > 0.0f) {
+				cam->GetRuntimeData2().worldFOV = g_baseFOV;
+				g_baseFOV = 0.0f;
+			}
+			// Steady Hand: slow time while zoomed
+			float slow = 1.0f;
+			if (zoomed && g_zoom >= 1.0f) {
+				if (g_steady2 && a_pc->HasPerk(g_steady2)) {
+					slow = 0.5f;
+				} else if (g_steady1 && a_pc->HasPerk(g_steady1)) {
+					slow = 0.75f;
+				}
+			}
+			if (slow < 1.0f && !g_slowed) {
+				SetSlow(slow);
+				g_slowed = true;
+			} else if (slow >= 1.0f && g_slowed) {
+				SetSlow(1.0f);
+				g_slowed = false;
+			}
+		}
+
+		void Reset()
+		{
+			g_held = false;
+			g_on = false;
+			if (g_global) {
+				g_global->value = 0.0f;
+			}
+			if (g_slowed) {
+				SetSlow(1.0f);
+				g_slowed = false;
+			}
+			auto cam = RE::PlayerCamera::GetSingleton();
+			if (cam && g_baseFOV > 0.0f) {
+				cam->GetRuntimeData2().worldFOV = g_baseFOV;
+			}
+			g_baseFOV = 0.0f;
+			g_zoom = 0.0f;
+		}
+	}
+
 	// diagnostics (Garand only): every animation event of the player with time and attack state, to see which clip runs
 	class AnimLog : public RE::BSTEventSink<RE::BSAnimationGraphEvent>
 	{
@@ -571,6 +726,7 @@ namespace
 		g_clipIn = clip ? clip->As<RE::BGSSoundDescriptorForm>() : nullptr;
 		auto cyl = dh ? dh->LookupForm(0xAD5, kPlugin) : nullptr;
 		g_bfrCyl = cyl ? cyl->As<RE::BGSSoundDescriptorForm>() : nullptr;
+		ADS::Load();
 		SKSE::log::info("Garand clip ping sound: {}, reload sound: {}; BFR cylinder: {}", g_ping ? "ok" : "missing", g_clipIn ? "ok" : "missing", g_bfrCyl ? "ok" : "missing");
 		auto src = RE::ScriptEventSourceHolder::GetSingleton();
 		src->AddEventSink<RE::TESContainerChangedEvent>(Sink::Get());
@@ -586,14 +742,16 @@ namespace
 		Mech::g_closeT = -1.0f;
 		g_unloaded = nullptr;
 		AnimLog::Get()->Attach();
+		ADS::Reset();
 	}
 }
 
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S.%e] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.4.7 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.5.0 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
+	ADS::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
 		switch (a_msg->type) {
