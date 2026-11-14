@@ -1,3 +1,5 @@
+#include <chrono>
+#include <cstdio>
 // PortableOneRoomMag: magazines for the Portable One Room guns (S&W M29 6 rounds, Colt M1911 8 rounds, K2 30 rounds,
 // M1 Garand 8-round en-bloc clip: last shot -> clip "ping", operating rod stays back until the reload closes it).
 // Replaces the old Papyrus scripts (PORGun on the weapon + PORMagWatch effect). Those were attached to the
@@ -48,6 +50,12 @@ namespace
 	Gun* EquippedGun();
 	bool EquippedGunIsGarand();
 	struct ClipSnd { static void Play(); static void Cylinder(); };
+	float SpeedMult(RE::PlayerCharacter* a_pc)
+	{
+		auto av = a_pc ? a_pc->AsActorValueOwner() : nullptr;
+		const float m = av ? av->GetActorValue(RE::ActorValue::kWeaponSpeedMult) : 0.0f;
+		return m > 0.1f ? m : 1.0f;   // 0 = not set = 1x
+	}
 
 	namespace Mech
 	{
@@ -88,8 +96,9 @@ namespace
 			if (g_kind == 1 || g_kind == 4) {
 				constexpr float H = 30.0f;
 				const float step = g_kind == 4 ? 72.0f : 60.0f;   // 5-shot cylinder turns 72 deg per shot
-				a_hammer = t < 0.03f ? H * t / 0.03f : t < 0.12f ? H : H * (1.0f - Ease((t - 0.12f) / 0.28f));
-				a_cyl = t < 0.40f ? step * Ease((t - 0.12f) / 0.28f) : 0.0f;  // n-fold symmetric: one step == 0
+				// 1.4.6: done by 0.30 s (FNV rates: Lucky 0.36 s, Mysterious Magnum 0.41 s between shots)
+				a_hammer = t < 0.03f ? H * t / 0.03f : t < 0.08f ? H : H * (1.0f - Ease((t - 0.08f) / 0.22f));
+				a_cyl = t < 0.30f ? step * Ease((t - 0.08f) / 0.22f) : 0.0f;  // n-fold symmetric: one step == 0
 			} else if (g_kind == 2) {
 				constexpr float H = 50.0f, L = 2.5f;
 				a_hammer = t < 0.025f ? H * t / 0.025f : H * (1.0f - Ease((t - 0.025f) / 0.075f));
@@ -135,7 +144,7 @@ namespace
 			}
 			if (g_closeT >= 0.0f) {
 				const float before = g_closeT;
-				g_closeT += a_dt;
+				g_closeT += a_dt * SpeedMult(a_pc);   // Quick Shot etc. speed the reload animation up: keep the op rod/sound on it
 				if (before < kGarandClipSnd && g_closeT >= kGarandClipSnd) {
 					ClipSnd::Play();  // its loudest click (0.18 s in) lands on the op rod slam
 				}
@@ -164,8 +173,8 @@ namespace
 			}
 			const float before = g_t;
 			g_t += a_dt;
-			if (g_kind == 4 && before < 0.34f && g_t >= 0.34f) {
-				ClipSnd::Cylinder();  // BFR: the cylinder locks into the next chamber (it turns 0.12-0.40 s)
+			if (g_kind == 4 && before < 0.26f && g_t >= 0.26f) {
+				ClipSnd::Cylinder();  // BFR: the cylinder locks into the next chamber (it turns 0.08-0.30 s)
 			}
 			const bool done = g_t > 0.5f;
 			for (bool fp : { false, true }) {
@@ -490,8 +499,21 @@ namespace
 			}
 			gun->fired += a_ev->itemCount;
 			Mech::Shot(gun->mech);
-			if (gun->mech == 5) {
-				SKSE::log::info("{}: shot {}/{} (attack state {})", gun->name, gun->fired, gun->size, static_cast<std::uint32_t>(pc->AsActorState()->GetAttackState()));
+			{
+				using clock = std::chrono::steady_clock;
+				static clock::time_point last{};
+				static Gun* lastGun = nullptr;
+				const auto now = clock::now();
+				const float dt = lastGun == gun ? std::chrono::duration<float>(now - last).count() : -1.0f;
+				last = now; lastGun = gun;
+				char gap[32];
+				if (dt >= 0.0f && dt < 5.0f) {
+					std::snprintf(gap, sizeof(gap), "+%.3fs", dt);
+				} else {
+					std::snprintf(gap, sizeof(gap), "(first)");
+				}
+				SKSE::log::info("{}: shot {}/{} {} (attack state {}, speed x{:.2f})", gun->name, gun->fired, gun->size, gap,
+					static_cast<std::uint32_t>(pc->AsActorState()->GetAttackState()), SpeedMult(pc));
 			}
 			if (gun->fired >= gun->size) {
 				gun->fired = 0;
@@ -569,8 +591,8 @@ namespace
 
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
-	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.4.5 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S.%e] %v" });
+	SKSE::log::info("PortableOneRoomMag 1.4.6 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
