@@ -289,7 +289,7 @@ namespace
 		g_pendT = 0.0f;
 	}
 
-	// Garand: the clip is gone after the 8th shot, so take the ammo off right away. A fast click can no longer start a
+	// Empty magazine (Garand since 1.4.1, every gun since 1.4.7): take the ammo off right away. A fast click can no longer start a
 	// 9th attack that the reload would then cut in half ("no bolts" + reload motion, 1.4.0 with quick clicks).
 	void Unload(Gun* a_gun)
 	{
@@ -316,7 +316,7 @@ namespace
 				return;
 			}
 			auto ammo = pc->GetCurrentAmmo();
-			const bool unloaded = !ammo && g_unloaded && a_gun->mech == 5;
+			const bool unloaded = !ammo && g_unloaded;
 			if (unloaded) {
 				ammo = g_unloaded;
 			}
@@ -363,7 +363,7 @@ namespace
 				g_pendT += a_dt;
 				const auto st = a_pc->AsActorState()->GetAttackState();
 				const bool idle = st == RE::ATTACK_STATE_ENUM::kNone;
-				const float limit = g_pend->mech == 5 ? 1.5f : 0.4f;   // Garand: no ammo meanwhile, so waiting is safe
+				const float limit = g_unloaded ? 1.5f : 0.4f;   // ammo off meanwhile, so waiting is safe
 				if ((idle && g_pendT >= 0.05f) || g_pendT >= limit) {
 					SKSE::log::info("{}: reload after {:.2f}s ({}, attack state {})", g_pend->name, g_pendT, idle ? "attack done" : "timeout", static_cast<std::uint32_t>(st));
 					DoReload(g_pend);
@@ -521,8 +521,8 @@ namespace
 					Mech::g_locked = true;   // last round: the clip flies out, the op rod stays back
 					Mech::g_closeT = -1.0f;
 					PlaySnd(g_ping);
-					Unload(gun);
 				}
+				Unload(gun);   // 1.4.7: every gun - no extra shot between the empty magazine and the reload (1.4.6 log: SAA/M29 fired a 7th)
 				Reload(gun);
 			}
 			return RE::BSEventNotifyControl::kContinue;
@@ -592,7 +592,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S.%e] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.4.6 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.4.7 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
