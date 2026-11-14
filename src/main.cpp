@@ -533,17 +533,17 @@ namespace
 			const bool eagle = g_eagleEye && a_pc->HasPerk(g_eagleEye);
 			auto av = a_pc->AsActorValueOwner();
 			if (g_on && eagle && g_zoomOK && av) {   // vanilla Eagle Eye cost: 10 stamina per second while zoomed
-				const float real = a_dt / std::max(0.1f, RE::BSTimer::QGlobalTimeMultiplier());
-				av->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kStamina, -10.0f * real);
+				const float real = a_dt / (std::max)(0.1f, RE::BSTimer::QGlobalTimeMultiplier());
+				av->DamageActorValue(RE::ActorValue::kStamina, 10.0f * real);
 				if (av->GetActorValue(RE::ActorValue::kStamina) <= 0.0f) {
 					g_zoomOK = false;
 				}
 			}
 			const bool zoomed = g_on && g_zoomOK;
 			const float target = zoomed ? 1.0f : 0.0f;
-			const float realDt = a_dt / std::max(0.1f, RE::BSTimer::QGlobalTimeMultiplier());
+			const float realDt = a_dt / (std::max)(0.1f, RE::BSTimer::QGlobalTimeMultiplier());
 			const float step = realDt / 0.15f;
-			g_zoom = g_zoom < target ? std::min(target, g_zoom + step) : std::max(target, g_zoom - step);
+			g_zoom = g_zoom < target ? (std::min)(target, g_zoom + step) : (std::max)(target, g_zoom - step);
 			if (g_zoom > 0.0f) {
 				if (g_baseFOV <= 0.0f) {
 					g_baseFOV = cam->GetRuntimeData2().worldFOV;
