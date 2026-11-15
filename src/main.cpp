@@ -38,13 +38,11 @@ namespace
 	namespace ADS { void Tick(RE::PlayerCharacter* a_pc, float a_dt); void Install(); }
 
 	Gun g_guns[] = {
-		{ 0xA90, 6, "M29", 1 },
 		{ 0xAA0, 8, "M1911", 2, { 0.0f, -1.4f, 0.0f }, { 0.1983f, -0.7519f, 0.3826f }, 1.0f, 0.90f },  // New Agent (old WAP ALSID): 1st back 1.4; 3rd 90% about the hand
 		{ 0xA50, 30, "K2", 3, {}, { -0.8f, 0.0f, 0.0f } },        // K2: 3rd person a bit to the gun's right
 		{ 0xAB0, 6, "SAA", 1 },                                   // Colt Single Action Army
-		{ 0xAC0, 13, "HiPower", 2 },                              // Browning Hi-Power
-		{ 0xAD0, 5, "BFR", 4, {}, { 0.0f, 0.5f, -0.5f } },          // Magnum Research BFR: 5-shot; 3rd person a bit forward and up
-		// (M1 Garand removed in 1.6.0; its mechanism code - kind 5, ADS - stays but is unused)
+		// (1.7.0: S&W M29, Browning Hi-Power, Magnum Research BFR removed; M1 Garand removed in 1.6.0.
+		//  Their mechanism code - kinds 4 and 5, ADS - stays but is unused)
 	};
 
 	Gun* EquippedGun();
@@ -757,9 +755,6 @@ namespace
 		g_ping = ping ? ping->As<RE::BGSSoundDescriptorForm>() : nullptr;
 		auto clip = dh ? dh->LookupForm(0xAE6, kPlugin) : nullptr;
 		g_clipIn = clip ? clip->As<RE::BGSSoundDescriptorForm>() : nullptr;
-		auto cyl = dh ? dh->LookupForm(0xAD5, kPlugin) : nullptr;
-		g_bfrCyl = cyl ? cyl->As<RE::BGSSoundDescriptorForm>() : nullptr;
-		SKSE::log::info("BFR cylinder sound: {}", g_bfrCyl ? "ok" : "missing");
 		auto src = RE::ScriptEventSourceHolder::GetSingleton();
 		src->AddEventSink<RE::TESContainerChangedEvent>(Sink::Get());
 		src->AddEventSink<RE::TESEquipEvent>(Sink::Get());
@@ -781,7 +776,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S.%e] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.6.0 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.7.0 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();   // 1.6.0: ADS::Install() no longer called (Garand removed) - the block button is left alone
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
