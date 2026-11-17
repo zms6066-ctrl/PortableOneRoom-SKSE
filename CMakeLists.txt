@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(PortableOneRoomMag VERSION 1.7.0 LANGUAGES CXX)
+project(PortableOneRoomMag VERSION 1.8.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
