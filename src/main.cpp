@@ -6,7 +6,7 @@
 //   KGS_<sword>        equips that phantom sword (hidden armor attached to the hand/weapon node) + summon sound
 //   CastOKStop/attackStop  breaks the phantom swords: shatter explosion at the magic node + break sound, item removed
 //   preHitFrame/weaponSwing/KillMoveStart with no phantom out -> Executioner (the original "default" phantom)
-//   blockStart / blockStop  Aureliane (phantom shield) out / away
+//   blocking (polled each frame)  Aureliane (phantom shield) out / away
 //   KGC_<n>            combo stage n (hidden abilities SML1..4 - the OAR configs pick the next combo / smash clip by them)
 //   KGJ                judgement cut: the projectile spell, magnitude = weapon damage x attack damage mult
 // Equipping the sword puts on the hand runes; unequipping it clears everything. Nothing is saved in the co-save:
@@ -54,6 +54,9 @@ namespace
 
 	int g_curStage = 0;
 	std::chrono::steady_clock::time_point g_stageTime{};
+	std::chrono::steady_clock::time_point g_resetAt{};   // attackStop: the stage survives a moment (vanilla 2H chains
+	bool g_resetPending = false;                         // only right -> left, the next click starts a new attack)
+	bool g_wasBlocking = false;
 
 	template <class T>
 	T* Lookup(RE::FormID a_local)
@@ -207,6 +210,7 @@ namespace
 		}
 		PutOn(a_pc, a_p.form);
 		a_p.out = true;
+		SKSE::log::info("summon {}", a_p.name);
 		if (a_p.summonSound) {
 			PlaySound(a_p.summonSound == 2 ? g_sndSummonK : g_sndSummon, a_pc);
 		}
@@ -227,8 +231,12 @@ namespace
 		if (a_n >= 1 && a_n <= 4 && g_stage[a_n] && !a_pc->HasSpell(g_stage[a_n])) {
 			a_pc->AddSpell(g_stage[a_n]);
 		}
+		if (a_n != g_curStage) {
+			SKSE::log::info("combo stage {}", a_n);
+		}
 		g_curStage = a_n;
 		g_stageTime = std::chrono::steady_clock::now();
+		g_resetPending = false;
 	}
 
 	void JudgementCut(RE::PlayerCharacter* a_pc)
@@ -241,9 +249,15 @@ namespace
 		if (mult > 0.0f) {
 			dmg *= mult;
 		}
-		if (auto caster = a_pc->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant)) {
-			caster->CastSpellImmediate(g_cut, false, nullptr, 1.0f, false, dmg, a_pc);
+		RE::TESObjectREFR* target = nullptr;
+		auto ct = a_pc->GetActorRuntimeData().currentCombatTarget.get();
+		if (ct && !ct->IsDead()) {
+			target = ct.get();
 		}
+		if (auto caster = a_pc->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant)) {
+			caster->CastSpellImmediate(g_cut, false, target, 1.0f, false, dmg, a_pc);
+		}
+		SKSE::log::info("judgement cut, magnitude {:.1f}, target {:08X}", dmg, target ? target->GetFormID() : 0);
 		PlaySound(g_sndJudge, a_pc);
 	}
 
@@ -260,6 +274,7 @@ namespace
 
 	void Clear(RE::PlayerCharacter* a_pc)
 	{
+		g_wasBlocking = false;
 		for (auto& p : g_ph) {
 			p.out = false;
 			TakeOff(a_pc, p.form);
@@ -272,9 +287,6 @@ namespace
 		auto pc = RE::PlayerCharacter::GetSingleton();
 		if (!pc || !HoldsSword(pc)) {
 			return;
-		}
-		if (g_curStage && std::chrono::steady_clock::now() - g_stageTime > std::chrono::seconds(4)) {
-			SetStage(pc, 0);   // combo given up without an attackStop (stagger, menu, ...)
 		}
 		if (IEquals(a_tag, "SoundPlay")) {
 			std::string_view p{ a_payload };
@@ -293,7 +305,10 @@ namespace
 			BreakAll(pc, true, true);
 		} else if (IEquals(a_tag, "attackStop") || IEquals(a_tag, "bashStop")) {
 			BreakAll(pc, true, true);
-			SetStage(pc, 0);
+			if (g_curStage) {
+				g_resetPending = true;
+				g_resetAt = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
+			}
 		} else if (IEquals(a_tag, "preHitFrame") || IEquals(a_tag, "weaponSwing") || IEquals(a_tag, "KillMoveStart")) {
 			if (!AnyOut()) {
 				if (auto ex = Find("Executioner")) {
@@ -303,20 +318,51 @@ namespace
 			if (IEquals(a_tag, "KillMoveStart")) {
 				SetStage(pc, 0);
 			}
-		} else if (IEquals(a_tag, "blockStart")) {
-			if (auto sh = Find("Aureliane"); sh && !sh->out) {
-				BreakAll(pc, true);
-				Summon(pc, *sh);
-			}
-		} else if (IEquals(a_tag, "blockStop")) {
-			if (auto sh = Find("Aureliane")) {
-				Break(pc, *sh, true);
-			}
 		} else if (IEquals(a_tag, "weaponSheathe") || IEquals(a_tag, "staggerStart")) {
 			BreakAll(pc, true);
 			SetStage(pc, 0);
 		}
 	}
+
+	// every frame (PlayerCharacter::Update): block state -> phantom shield, delayed stage reset, stale stage timeout.
+	// Blocking is polled because blockStart / blockStop only reach the event sink when the block clip carries them.
+	void Tick(RE::PlayerCharacter* a_pc)
+	{
+		if (!HoldsSword(a_pc)) {
+			g_wasBlocking = false;
+			return;
+		}
+		const auto now = std::chrono::steady_clock::now();
+		if (g_resetPending && now >= g_resetAt) {
+			g_resetPending = false;
+			SetStage(a_pc, 0);
+		}
+		if (g_curStage && now - g_stageTime > std::chrono::seconds(5)) {
+			SetStage(a_pc, 0);
+		}
+		const bool blocking = a_pc->IsBlocking();
+		if (blocking != g_wasBlocking) {
+			g_wasBlocking = blocking;
+			if (auto sh = Find("Aureliane")) {
+				if (blocking) {
+					BreakAll(a_pc, true);
+					Summon(a_pc, *sh);
+				} else {
+					Break(a_pc, *sh, true);
+				}
+			}
+		}
+	}
+
+	struct Update
+	{
+		static void thunk(RE::PlayerCharacter* a_pc, float a_dt)
+		{
+			func(a_pc, a_dt);
+			Tick(a_pc);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
 
 	class AnimSink : public RE::BSTEventSink<RE::BSAnimationGraphEvent>
 	{
@@ -334,7 +380,7 @@ namespace
 			}
 			std::string_view tag{ a_ev->tag.c_str() };
 			static constexpr std::string_view kWanted[] = { "SoundPlay", "CastOKStop", "attackStop", "bashStop", "preHitFrame",
-				"weaponSwing", "KillMoveStart", "blockStart", "blockStop", "weaponSheathe", "staggerStart" };
+				"weaponSwing", "KillMoveStart", "weaponSheathe", "staggerStart" };
 			bool want = false;
 			for (auto w : kWanted) {
 				if (IEquals(tag, w)) {
@@ -431,7 +477,11 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "KingsglaiveFX", .logPattern = "[%H:%M:%S.%e] %v" });
-	SKSE::log::info("KingsglaiveFX 1.0.0 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("KingsglaiveFX 1.1.0 - runtime {}", a_skse->RuntimeVersion().string());
+	{
+		REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_PlayerCharacter[0] };
+		Update::func = vtbl.write_vfunc(0xAD, Update::thunk);
+	}
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
 		switch (a_msg->type) {
 		case SKSE::MessagingInterface::kDataLoaded:
