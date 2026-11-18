@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(PortableOneRoomMag VERSION 1.9.0 LANGUAGES CXX)
+project(PortableOneRoomMag VERSION 1.10.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,6 +14,6 @@ add_commonlibsse_plugin(PortableOneRoomMag
     NAME "PortableOneRoomMag"
     AUTHOR "Portable One Room"
     USE_ADDRESS_LIBRARY
-    SOURCES src/main.cpp src/phantom.cpp)
+    SOURCES src/main.cpp)
 
 target_precompile_headers(PortableOneRoomMag PRIVATE src/PCH.h)
