@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(PortableOneRoomMag VERSION 1.8.0 LANGUAGES CXX)
+project(KingsglaiveFX VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,10 +10,10 @@ add_subdirectory(extern/CommonLibSSE-NG CommonLibSSE EXCLUDE_FROM_ALL)
 
 include(extern/CommonLibSSE-NG/cmake/CommonLibSSE.cmake)
 
-add_commonlibsse_plugin(PortableOneRoomMag
-    NAME "PortableOneRoomMag"
-    AUTHOR "Portable One Room"
+add_commonlibsse_plugin(KingsglaiveFX
+    NAME "KingsglaiveFX"
+    AUTHOR "Kingsglaive scriptless edit"
     USE_ADDRESS_LIBRARY
     SOURCES src/main.cpp)
 
-target_precompile_headers(PortableOneRoomMag PRIVATE src/PCH.h)
+target_precompile_headers(KingsglaiveFX PRIVATE src/PCH.h)

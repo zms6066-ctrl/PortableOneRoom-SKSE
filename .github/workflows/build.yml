@@ -54,20 +54,20 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: PortableOneRoomMag
+          name: KingsglaiveFX
           path: |
-            build/PortableOneRoomMag.dll
-            build/PortableOneRoomMag.pdb
+            build/KingsglaiveFX.dll
+            build/KingsglaiveFX.pdb
 
       - name: Publish DLL to the dist branch
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/kingsglaive'
         shell: bash
         run: |
-          mkdir dist_out && cp build/PortableOneRoomMag.dll dist_out/
+          mkdir dist_out && cp build/KingsglaiveFX.dll dist_out/
           cd dist_out
-          git init -q -b dist
+          git init -q -b dist-kingsglaive
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
           git add -A
           git commit -qm "Build ${GITHUB_SHA}"
-          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" dist
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" dist-kingsglaive

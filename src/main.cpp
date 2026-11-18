@@ -1,439 +1,437 @@
 #include <chrono>
-#include <cstdio>
-// PortableOneRoomMag: magazines for the Portable One Room guns (K2 30 rounds, Colt New Agent 8, Colt SAA 6).
-// Replaces the old Papyrus scripts (PORGun on the weapon + PORMagWatch effect). Those were attached to the
-// weapon itself, and a weapon taken out of a container sometimes never woke its script up, so no magazine.
-// Here everything is watched from the player side: whatever gun the player holds, wherever it came from.
-//
-// counting : TESContainerChangedEvent - the equipped ammo leaving the player with no reference = a shot
-//            (the same rule the Papyrus watcher used: drops make a reference, menus are ignored)
-// reload   : after <size> shots the ammo is taken off at once (no extra attack can slip in), and once the attack is
-//            over it is put back on the main thread -> the gun's reload animation; checked 0.35 s later
-// reset    : the player equipping the ammo (manual reload) or re-equipping the gun refills the magazine
-// action   : on every counted shot the gun's own parts move (nodes in the gun meshes, both 1st and 3rd person):
-//            Colt SAA - hammer falls and re-cocks while the cylinder turns one chamber; Colt New Agent - slide cycles
-//            and the hammer falls / is pushed back; K2 - bolt carrier + charging handle.
-//            Driven from PlayerCharacter::Update (vtable 0xAD).
-// view     : per-view position / scale of the gun (PORAdjust node), 1st and 3rd person separately
+#include <cctype>
+// KingsglaiveFX: the phantom-sword show of the Kingsglaive mod without its Papyrus scripts.
+// The OAR clips carry markers (SoundPlay.KGS_<sword>, SoundPlay.KGC_<stage>, SoundPlay.KGJ). This plugin listens to the
+// player's animation events while the King's sword (Kingsglaive.esp 0x800) is in the right hand and:
+//   KGS_<sword>        equips that phantom sword (hidden armor attached to the hand/weapon node) + summon sound
+//   CastOKStop/attackStop  breaks the phantom swords: shatter explosion at the magic node + break sound, item removed
+//   preHitFrame/weaponSwing/KillMoveStart with no phantom out -> Executioner (the original "default" phantom)
+//   blockStart / blockStop  Aureliane (phantom shield) out / away
+//   KGC_<n>            combo stage n (hidden abilities SML1..4 - the OAR configs pick the next combo / smash clip by them)
+//   KGJ                judgement cut: the projectile spell, magnitude = weapon damage x attack damage mult
+// Equipping the sword puts on the hand runes; unequipping it clears everything. Nothing is saved in the co-save:
+// on load all phantoms / stage abilities are cleared.
 
 namespace
 {
-	constexpr std::string_view kPlugin = "Portable One Room.esp";
+	constexpr std::string_view kPlugin = "Kingsglaive.esp";
+	constexpr RE::FormID kWeapon = 0x800, kSndBreak = 0x807, kSndSummon = 0x808, kSndJudge = 0x809, kSndSummonK = 0x80A,
+						 kCutSpell = 0x80E, kExpl = 0x811, kExplL = 0x812, kDummy = 0x813, kStage1 = 0x818, kRuneR = 0x82A, kRuneL = 0x82B;
 
-	struct Gun
+	enum Side { kR, kL, kNone };
+	struct Phantom
 	{
-		RE::FormID    local;
-		std::int32_t  size;
-		const char*   name;
-		int           mech;  // 0 none, 1 revolver (6 chambers), 2 pistol with slide, 3 rifle bolt
-		float         fp[3]{ 0, 0, 0 };  // PORAdjust offset in 1st person view (gun's own axes: x side, y muzzle)
-		float         tp[3]{ 0, 0, 0 };  // ... and in 3rd person view
-		float         fs{ 1.0f };        // PORAdjust scale, 1st person
-		float         ts{ 1.0f };        // ... 3rd person
-		RE::FormID    id{ 0 };
-		std::int32_t  fired{ 0 };
+		const char*      name;
+		RE::FormID       local;
+		std::uint8_t     slots;   // 1 = slot 39, 2 = slot 48
+		Side             side;    // shatter at the right / left magic node, kNone = no shatter effect
+		bool             breakSound;
+		int              summonSound;  // 0 none, 1 normal, 2 "K" (judgement)
+		RE::TESObjectARMO* form{ nullptr };
+		bool             out{ false };
 	};
 
-	void ReloadTick(RE::PlayerCharacter* a_pc, float a_dt);
-	void ViewTick(RE::PlayerCharacter* a_pc);
-
-	Gun g_guns[] = {
-		{ 0xA50, 30, "K2", 3, {}, { -0.8f, 0.0f, 0.0f } },        // K2: 3rd person a bit to the gun's right
-		{ 0xAA0, 8, "M1911", 2, { 0.0f, -1.4f, 0.0f }, { 0.1983f, -0.7519f, 0.3826f }, 1.0f, 0.90f },  // Colt New Agent (WAP ALSID): 1st back 1.4; 3rd 90% about the hand
-		{ 0xAB0, 6, "SAA", 1 },                                   // Colt Single Action Army
+	Phantom g_ph[] = {
+		{ "Eclair", 0x81C, 3, kR, true, 1 }, { "Judgement", 0x81D, 3, kL, true, 2 }, { "Kyrie", 0x81E, 3, kR, true, 1 },
+		{ "Lapis", 0x81F, 3, kR, true, 1 }, { "LiberateSky", 0x820, 3, kR, true, 1 }, { "Prelude", 0x821, 1, kR, true, 1 },
+		{ "Revenant", 0x822, 3, kR, true, 1 }, { "Sazanami", 0x823, 1, kR, true, 0 }, { "SazanamiSCB", 0x824, 2, kL, false, 1 },
+		{ "SazanamiTsuka", 0x825, 1, kNone, false, 0 }, { "Unfaith", 0x826, 2, kL, true, 1 }, { "Untruth", 0x827, 1, kR, true, 1 },
+		{ "Aureliane", 0x828, 3, kNone, true, 0 }, { "Executioner", 0x829, 3, kR, true, 1 },
 	};
 
-	Gun* EquippedGun();
+	RE::TESObjectWEAP*          g_weapon{ nullptr };
+	RE::BGSSoundDescriptorForm* g_sndBreak{ nullptr };
+	RE::BGSSoundDescriptorForm* g_sndSummon{ nullptr };
+	RE::BGSSoundDescriptorForm* g_sndSummonK{ nullptr };
+	RE::BGSSoundDescriptorForm* g_sndJudge{ nullptr };
+	RE::SpellItem*              g_cut{ nullptr };
+	RE::BGSExplosion*           g_expl{ nullptr };
+	RE::BGSExplosion*           g_explL{ nullptr };
+	RE::TESObjectACTI*          g_dummy{ nullptr };
+	RE::SpellItem*              g_stage[5]{};  // 1..4
+	RE::TESObjectARMO*          g_runeR{ nullptr };
+	RE::TESObjectARMO*          g_runeL{ nullptr };
 
-	namespace Mech
+	int g_curStage = 0;
+	std::chrono::steady_clock::time_point g_stageTime{};
+
+	template <class T>
+	T* Lookup(RE::FormID a_local)
 	{
-		float g_t = -1.0f;  // seconds since the last shot, <0 = idle
-		int   g_kind = 0;
-
-		float Ease(float x) { x = std::clamp(x, 0.0f, 1.0f); return x * x * (3.0f - 2.0f * x); }
-
-		RE::NiMatrix3 Rot(int a_axis, float a_deg)
-		{
-			const float r = a_deg * 0.01745329252f, c = std::cos(r), s = std::sin(r);
-			RE::NiMatrix3 m;
-			m.entry[0][0] = 1; m.entry[0][1] = 0; m.entry[0][2] = 0;
-			m.entry[1][0] = 0; m.entry[1][1] = 1; m.entry[1][2] = 0;
-			m.entry[2][0] = 0; m.entry[2][1] = 0; m.entry[2][2] = 1;
-			if (a_axis == 0) {  // gun side axis: hammer
-				m.entry[1][1] = c; m.entry[1][2] = -s; m.entry[2][1] = s; m.entry[2][2] = c;
-			} else {            // bore axis: cylinder
-				m.entry[0][0] = c; m.entry[0][2] = s; m.entry[2][0] = -s; m.entry[2][2] = c;
-			}
-			return m;
-		}
-
-		// hammer angle (deg, + = falls forward), cylinder angle (deg), slide offset (units, - = back)
-		void Pose(float t, float& a_hammer, float& a_cyl, float& a_slide)
-		{
-			a_hammer = a_cyl = a_slide = 0.0f;
-			if (t < 0.0f) {
-				return;
-			}
-			if (g_kind == 1) {  // revolver: done by 0.30 s (FNV Lucky: 0.36 s between shots)
-				constexpr float H = 30.0f, step = 60.0f;
-				a_hammer = t < 0.03f ? H * t / 0.03f : t < 0.08f ? H : H * (1.0f - Ease((t - 0.08f) / 0.22f));
-				a_cyl = t < 0.30f ? step * Ease((t - 0.08f) / 0.22f) : 0.0f;  // 6-fold symmetric: one step == 0
-			} else if (g_kind == 2) {
-				constexpr float H = 50.0f, L = 2.5f;
-				a_hammer = t < 0.025f ? H * t / 0.025f : H * (1.0f - Ease((t - 0.025f) / 0.075f));
-				a_slide = t < 0.06f ? -L * t / 0.06f : -L * (1.0f - Ease((t - 0.06f) / 0.14f));
-			} else if (g_kind == 3) {  // K2: bolt carrier + charging handle, short and fast (fits full-auto)
-				constexpr float L = 2.2f;
-				a_slide = t < 0.025f ? -L * t / 0.025f : -L * (1.0f - Ease((t - 0.025f) / 0.065f));
-			}
-		}
-
-		void Apply(RE::NiAVObject* a_root, float t)
-		{
-			static const RE::BSFixedString hammer{ "PORHammer" }, cyl{ "PORCylinder" }, slide{ "PORSlide" };
-			float h, c, sl;
-			Pose(t, h, c, sl);
-			RE::NiUpdateData ud{};
-			if (auto n = a_root->GetObjectByName(hammer)) {
-				n->local.rotate = Rot(0, h);
-				n->Update(ud);
-			}
-			if (auto n = a_root->GetObjectByName(cyl)) {
-				n->local.rotate = Rot(1, c);
-				n->Update(ud);
-			}
-			if (auto n = a_root->GetObjectByName(slide)) {
-				n->local.translate = RE::NiPoint3(0.0f, sl, 0.0f);
-				n->Update(ud);
-			}
-		}
-
-		void Tick(RE::PlayerCharacter* a_pc, float a_dt)
-		{
-			if (!a_pc || g_t < 0.0f) {
-				return;
-			}
-			g_t += a_dt;
-			const bool done = g_t > 0.5f;
-			for (bool fp : { false, true }) {
-				if (auto root = a_pc->Get3D(fp)) {
-					Apply(root, done ? -1.0f : g_t);
-				}
-			}
-			if (done) {
-				g_t = -1.0f;
-			}
-		}
-
-		void Shot(int a_kind)
-		{
-			if (a_kind) {
-				g_kind = a_kind;
-				g_t = 0.0f;
-			}
-		}
-
-		struct Update
-		{
-			static void thunk(RE::PlayerCharacter* a_pc, float a_dt)
-			{
-				func(a_pc, a_dt);
-				Tick(a_pc, a_dt);
-				ReloadTick(a_pc, a_dt);
-				ViewTick(a_pc);
-			}
-			static inline REL::Relocation<decltype(thunk)> func;
-		};
-
-		void Install()
-		{
-			REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_PlayerCharacter[0] };
-			Update::func = vtbl.write_vfunc(0xAD, Update::thunk);
-		}
+		auto dh = RE::TESDataHandler::GetSingleton();
+		auto f = dh ? dh->LookupForm(a_local, kPlugin) : nullptr;
+		return f ? f->As<T>() : nullptr;
 	}
 
-	std::atomic_bool g_reloading{ false };
-
-	Gun* EquippedGun()
+	Phantom* Find(std::string_view a_name)
 	{
-		auto pc = RE::PlayerCharacter::GetSingleton();
-		if (!pc) {
-			return nullptr;
-		}
-		auto obj = pc->GetEquippedObject(false);
-		if (!obj) {
-			return nullptr;
-		}
-		for (auto& g : g_guns) {
-			if (g.id != 0 && obj->GetFormID() == g.id) {
-				return &g;
+		for (auto& p : g_ph) {
+			if (a_name == p.name) {
+				return &p;
 			}
 		}
 		return nullptr;
 	}
 
-	// Magazine empty -> reload. Re-equipping the ammo straight after the last shot broke when the player kept clicking:
-	// the next attack slipped in, ran with no bolt (a bare swing) and the queued re-equip got dropped ("no bolts").
-	// Now: ammo off at once, wait for the attack to finish (max 1.5 s), put it back in one task, then check 0.35 s
-	// later that it is really there (re-equip up to 3x).
-	Gun*           g_pend{ nullptr };     // waiting to reload
-	float          g_pendT{ 0.0f };
-	Gun*           g_check{ nullptr };    // reloaded, verifying
-	RE::TESAmmo*   g_checkAmmo{ nullptr };
-	float          g_checkT{ 0.0f };
-	int            g_checkTries{ 0 };
-	RE::TESAmmo*   g_unloaded{ nullptr }; // ammo taken off at the last shot
-
-	// all of the ammo in the inventory (equipping only 1 would leave exactly one round equipped)
-	std::int32_t AmmoCount(RE::PlayerCharacter* a_pc, RE::TESAmmo* a_ammo)
+	bool IEquals(std::string_view a, std::string_view b)
 	{
-		auto inv = a_pc->GetInventoryCounts([a_ammo](RE::TESBoundObject& o) { return &o == a_ammo; });
-		auto it = inv.find(a_ammo);
-		return it != inv.end() && it->second > 0 ? it->second : 1;
-	}
-
-	void EquipAmmo(RE::TESAmmo* a_ammo)
-	{
-		SKSE::GetTaskInterface()->AddTask([a_ammo]() {
-			auto pc = RE::PlayerCharacter::GetSingleton();
-			if (pc && !pc->GetCurrentAmmo()) {
-				g_reloading = true;
-				RE::ActorEquipManager::GetSingleton()->EquipObject(pc, a_ammo, nullptr, AmmoCount(pc, a_ammo), nullptr, false, false, false);
-				g_reloading = false;
-			}
-		});
-	}
-
-	void Reload(Gun* a_gun)
-	{
-		g_pend = a_gun;
-		g_pendT = 0.0f;
-	}
-
-	void Unload(Gun* a_gun)
-	{
-		SKSE::GetTaskInterface()->AddTask([a_gun]() {
-			auto pc = RE::PlayerCharacter::GetSingleton();
-			if (!pc || EquippedGun() != a_gun) {
-				return;
-			}
-			if (auto ammo = pc->GetCurrentAmmo()) {
-				g_unloaded = ammo;
-				g_reloading = true;
-				RE::ActorEquipManager::GetSingleton()->UnequipObject(pc, ammo, nullptr, AmmoCount(pc, ammo), nullptr, false, false, false);
-				g_reloading = false;
-				SKSE::log::info("{}: magazine empty - ammo off until the reload", a_gun->name);
-			}
-		});
-	}
-
-	void DoReload(Gun* a_gun)
-	{
-		SKSE::GetTaskInterface()->AddTask([a_gun]() {
-			auto pc = RE::PlayerCharacter::GetSingleton();
-			if (!pc || EquippedGun() != a_gun) {
-				return;
-			}
-			auto ammo = pc->GetCurrentAmmo();
-			const bool unloaded = !ammo && g_unloaded;
-			if (unloaded) {
-				ammo = g_unloaded;
-			}
-			g_unloaded = nullptr;
-			if (!ammo) {
-				SKSE::log::info("{}: reload - no ammo equipped", a_gun->name);
-				return;
-			}
-			auto em = RE::ActorEquipManager::GetSingleton();
-			g_reloading = true;
-			if (!unloaded) {
-				em->UnequipObject(pc, ammo, nullptr, 1, nullptr, false, false, false);
-			}
-			em->EquipObject(pc, ammo, nullptr, unloaded ? AmmoCount(pc, ammo) : 1, nullptr, false, false, false);
-			g_reloading = false;
-			g_check = a_gun;
-			g_checkAmmo = ammo;
-			g_checkT = 0.0f;
-			g_checkTries = 0;
-			SKSE::log::info("{}: {} shots -> reload", a_gun->name, a_gun->size);
-		});
-	}
-
-	void ReloadTick(RE::PlayerCharacter* a_pc, float a_dt)
-	{
-		if (g_pend) {
-			if (EquippedGun() != g_pend) {
-				g_pend = nullptr;
-				if (auto ammo = g_unloaded) {   // gun put away while empty: give the ammo back (no animation needed)
-					g_unloaded = nullptr;
-					EquipAmmo(ammo);
-				}
-			} else {
-				g_pendT += a_dt;
-				const auto st = a_pc->AsActorState()->GetAttackState();
-				const bool idle = st == RE::ATTACK_STATE_ENUM::kNone;
-				const float limit = g_unloaded ? 1.5f : 0.4f;   // ammo off meanwhile, so waiting is safe
-				if ((idle && g_pendT >= 0.05f) || g_pendT >= limit) {
-					SKSE::log::info("{}: reload after {:.2f}s ({})", g_pend->name, g_pendT, idle ? "attack done" : "timeout");
-					DoReload(g_pend);
-					g_pend = nullptr;
-				}
+		if (a.size() != b.size()) {
+			return false;
+		}
+		for (std::size_t i = 0; i < a.size(); ++i) {
+			if (std::tolower(static_cast<unsigned char>(a[i])) != std::tolower(static_cast<unsigned char>(b[i]))) {
+				return false;
 			}
 		}
-		if (g_check) {
-			g_checkT += a_dt;
-			if (g_checkT >= 0.35f) {
-				g_checkT = 0.0f;
-				auto gun = g_check;
-				auto ammo = g_checkAmmo;
-				if (EquippedGun() != gun || !ammo) {
-					g_check = nullptr;
-				} else if (a_pc->GetCurrentAmmo() == ammo) {
-					SKSE::log::info("{}: reload ok, ammo equipped ({} in the inventory)", gun->name, AmmoCount(a_pc, ammo));
-					g_check = nullptr;
-				} else if (++g_checkTries > 3) {
-					SKSE::log::info("{}: ammo still missing after 3 re-equips - giving up", gun->name);
-					g_check = nullptr;
-				} else {
-					SKSE::log::info("{}: ammo missing after reload -> re-equip ({})", gun->name, g_checkTries);
-					EquipAmmo(ammo);
-				}
-			}
-		}
+		return true;
 	}
 
-	// Per-view placement: the same nif can need a slightly different spot in 1st and 3rd person (different hand
-	// animations). The gun nifs have a PORAdjust node; its local translation / scale is set here for each view's 3D.
-	void ViewTick(RE::PlayerCharacter* a_pc)
+	bool HoldsSword(RE::PlayerCharacter* a_pc)
 	{
-		auto gun = EquippedGun();
-		if (!gun || !a_pc) {
+		auto obj = a_pc ? a_pc->GetEquippedObject(false) : nullptr;
+		return obj && g_weapon && obj == g_weapon;
+	}
+
+	void PlaySound(RE::BGSSoundDescriptorForm* a_snd, RE::PlayerCharacter* a_pc)
+	{
+		if (!a_snd || !a_pc) {
 			return;
 		}
-		static const RE::BSFixedString adj{ "PORAdjust" };
-		for (bool fp : { false, true }) {
-			auto root = a_pc->Get3D(fp);
-			if (!root) {
-				continue;
+		RE::BSSoundHandle h;
+		if (auto am = RE::BSAudioManager::GetSingleton(); am && am->GetSoundHandle(h, a_snd)) {
+			h.SetPosition(a_pc->GetPosition());
+			if (auto root = a_pc->Get3D()) {
+				h.SetObjectToFollow(root);
 			}
-			auto n = root->GetObjectByName(adj);
-			if (!n) {
-				continue;
-			}
-			const float* o = fp ? gun->fp : gun->tp;
-			const float sc = fp ? gun->fs : gun->ts;
-			RE::NiPoint3 want{ o[0], o[1], o[2] };
-			if (n->local.translate.x != want.x || n->local.translate.y != want.y || n->local.translate.z != want.z || n->local.scale != sc) {
-				n->local.translate = want;
-				n->local.scale = sc;
-				RE::NiUpdateData ud{};
-				n->Update(ud);
+			h.Play();
+		}
+	}
+
+	std::int32_t Count(RE::PlayerCharacter* a_pc, RE::TESBoundObject* a_obj)
+	{
+		auto inv = a_pc->GetInventoryCounts([a_obj](RE::TESBoundObject& o) { return &o == a_obj; });
+		auto it = inv.find(a_obj);
+		return it != inv.end() ? it->second : 0;
+	}
+
+	void PutOn(RE::PlayerCharacter* a_pc, RE::TESObjectARMO* a_armor)
+	{
+		if (!a_armor) {
+			return;
+		}
+		if (Count(a_pc, a_armor) <= 0) {
+			a_pc->AddObjectToContainer(a_armor, nullptr, 1, nullptr);
+		}
+		RE::ActorEquipManager::GetSingleton()->EquipObject(a_pc, a_armor, nullptr, 1, nullptr, false, true, false, true);
+	}
+
+	void TakeOff(RE::PlayerCharacter* a_pc, RE::TESObjectARMO* a_armor)
+	{
+		if (!a_armor) {
+			return;
+		}
+		if (const auto n = Count(a_pc, a_armor); n > 0) {
+			RE::ActorEquipManager::GetSingleton()->UnequipObject(a_pc, a_armor, nullptr, 1, nullptr, false, true, false, true);
+			a_pc->RemoveItem(a_armor, n, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+		}
+	}
+
+	void Shatter(RE::PlayerCharacter* a_pc, Side a_side)
+	{
+		auto expl = a_side == kL ? g_explL : g_expl;
+		auto root = a_pc->Get3D();
+		if (!expl || !g_dummy || !root || a_side == kNone) {
+			return;
+		}
+		static const RE::BSFixedString nodeR{ "NPC R MagicNode [RMag]" }, nodeL{ "NPC L MagicNode [LMag]" };
+		auto node = root->GetObjectByName(a_side == kL ? nodeL : nodeR);
+		auto dummy = a_pc->PlaceObjectAtMe(g_dummy, false);
+		if (!dummy) {
+			return;
+		}
+		if (node) {
+			dummy->SetPosition(node->world.translate);
+		}
+		dummy->PlaceObjectAtMe(expl, false);
+		dummy->Disable();
+		dummy->SetDelete(true);
+	}
+
+	void Break(RE::PlayerCharacter* a_pc, Phantom& a_p, bool a_fx)
+	{
+		if (!a_p.out) {
+			return;
+		}
+		a_p.out = false;
+		TakeOff(a_pc, a_p.form);
+		if (a_fx) {
+			Shatter(a_pc, a_p.side);
+			if (a_p.breakSound) {
+				PlaySound(g_sndBreak, a_pc);
 			}
 		}
 	}
 
-	class Sink :
-		public RE::BSTEventSink<RE::TESContainerChangedEvent>,
-		public RE::BSTEventSink<RE::TESEquipEvent>
+	void BreakAll(RE::PlayerCharacter* a_pc, bool a_fx, bool a_keepShield = false)
+	{
+		for (auto& p : g_ph) {
+			if (a_keepShield && p.local == 0x828) {
+				continue;
+			}
+			Break(a_pc, p, a_fx);
+		}
+	}
+
+	bool AnyOut()
+	{
+		for (auto& p : g_ph) {
+			if (p.out) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	void Summon(RE::PlayerCharacter* a_pc, Phantom& a_p)
+	{
+		if (!a_p.form) {
+			return;
+		}
+		for (auto& o : g_ph) {   // the engine would push the old sword out of the slot: shatter it like the original did
+			if (o.out && &o != &a_p && (o.slots & a_p.slots)) {
+				Break(a_pc, o, true);
+			}
+		}
+		if (a_p.out) {
+			return;
+		}
+		PutOn(a_pc, a_p.form);
+		a_p.out = true;
+		if (a_p.summonSound) {
+			PlaySound(a_p.summonSound == 2 ? g_sndSummonK : g_sndSummon, a_pc);
+		}
+		if (a_p.local == 0x824) {   // scabbard comes with its hilt
+			if (auto t = Find("SazanamiTsuka")) {
+				Summon(a_pc, *t);
+			}
+		}
+	}
+
+	void SetStage(RE::PlayerCharacter* a_pc, int a_n)
+	{
+		for (int i = 1; i <= 4; ++i) {
+			if (g_stage[i] && i != a_n && a_pc->HasSpell(g_stage[i])) {
+				a_pc->RemoveSpell(g_stage[i]);
+			}
+		}
+		if (a_n >= 1 && a_n <= 4 && g_stage[a_n] && !a_pc->HasSpell(g_stage[a_n])) {
+			a_pc->AddSpell(g_stage[a_n]);
+		}
+		g_curStage = a_n;
+		g_stageTime = std::chrono::steady_clock::now();
+	}
+
+	void JudgementCut(RE::PlayerCharacter* a_pc)
+	{
+		if (!g_cut) {
+			return;
+		}
+		float dmg = g_weapon ? static_cast<float>(g_weapon->GetAttackDamage()) : 24.0f;
+		const float mult = a_pc->AsActorValueOwner()->GetActorValue(RE::ActorValue::kAttackDamageMult);
+		if (mult > 0.0f) {
+			dmg *= mult;
+		}
+		if (auto caster = a_pc->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant)) {
+			caster->CastSpellImmediate(g_cut, false, nullptr, 1.0f, false, dmg, a_pc);
+		}
+		PlaySound(g_sndJudge, a_pc);
+	}
+
+	void Runes(RE::PlayerCharacter* a_pc, bool a_on)
+	{
+		if (a_on) {
+			PutOn(a_pc, g_runeR);
+			PutOn(a_pc, g_runeL);
+		} else {
+			TakeOff(a_pc, g_runeR);
+			TakeOff(a_pc, g_runeL);
+		}
+	}
+
+	void Clear(RE::PlayerCharacter* a_pc)
+	{
+		for (auto& p : g_ph) {
+			p.out = false;
+			TakeOff(a_pc, p.form);
+		}
+		SetStage(a_pc, 0);
+	}
+
+	void Handle(std::string a_tag, std::string a_payload)
+	{
+		auto pc = RE::PlayerCharacter::GetSingleton();
+		if (!pc || !HoldsSword(pc)) {
+			return;
+		}
+		if (g_curStage && std::chrono::steady_clock::now() - g_stageTime > std::chrono::seconds(4)) {
+			SetStage(pc, 0);   // combo given up without an attackStop (stagger, menu, ...)
+		}
+		if (IEquals(a_tag, "SoundPlay")) {
+			std::string_view p{ a_payload };
+			if (p.starts_with("KGS_")) {
+				if (auto ph = Find(p.substr(4))) {
+					Summon(pc, *ph);
+				}
+			} else if (p.starts_with("KGC_") && p.size() == 5) {
+				SetStage(pc, p[4] - '0');
+			} else if (p == "KGJ") {
+				JudgementCut(pc);
+			}
+			return;
+		}
+		if (IEquals(a_tag, "CastOKStop")) {
+			BreakAll(pc, true, true);
+		} else if (IEquals(a_tag, "attackStop") || IEquals(a_tag, "bashStop")) {
+			BreakAll(pc, true, true);
+			SetStage(pc, 0);
+		} else if (IEquals(a_tag, "preHitFrame") || IEquals(a_tag, "weaponSwing") || IEquals(a_tag, "KillMoveStart")) {
+			if (!AnyOut()) {
+				if (auto ex = Find("Executioner")) {
+					Summon(pc, *ex);
+				}
+			}
+			if (IEquals(a_tag, "KillMoveStart")) {
+				SetStage(pc, 0);
+			}
+		} else if (IEquals(a_tag, "blockStart")) {
+			if (auto sh = Find("Aureliane"); sh && !sh->out) {
+				BreakAll(pc, true);
+				Summon(pc, *sh);
+			}
+		} else if (IEquals(a_tag, "blockStop")) {
+			if (auto sh = Find("Aureliane")) {
+				Break(pc, *sh, true);
+			}
+		} else if (IEquals(a_tag, "weaponSheathe") || IEquals(a_tag, "staggerStart")) {
+			BreakAll(pc, true);
+			SetStage(pc, 0);
+		}
+	}
+
+	class AnimSink : public RE::BSTEventSink<RE::BSAnimationGraphEvent>
 	{
 	public:
-		static Sink* Get()
+		static AnimSink* Get()
 		{
-			static Sink s;
+			static AnimSink s;
 			return &s;
 		}
 
-		RE::BSEventNotifyControl ProcessEvent(const RE::TESContainerChangedEvent* a_ev, RE::BSTEventSource<RE::TESContainerChangedEvent>*) override
+		RE::BSEventNotifyControl ProcessEvent(const RE::BSAnimationGraphEvent* a_ev, RE::BSTEventSource<RE::BSAnimationGraphEvent>*) override
 		{
-			if (!a_ev || a_ev->oldContainer != 0x14 || a_ev->newContainer != 0 || a_ev->reference) {
+			if (!a_ev || a_ev->tag.empty()) {
 				return RE::BSEventNotifyControl::kContinue;
 			}
-			auto ui = RE::UI::GetSingleton();
-			if (ui && ui->GameIsPaused()) {
-				return RE::BSEventNotifyControl::kContinue;
-			}
-			auto gun = EquippedGun();
-			auto pc = RE::PlayerCharacter::GetSingleton();
-			auto ammo = pc ? pc->GetCurrentAmmo() : nullptr;
-			if (!gun || !ammo || a_ev->baseObj != ammo->GetFormID()) {
-				return RE::BSEventNotifyControl::kContinue;
-			}
-			gun->fired += a_ev->itemCount;
-			Mech::Shot(gun->mech);
-			{
-				using clock = std::chrono::steady_clock;
-				static clock::time_point last{};
-				static Gun* lastGun = nullptr;
-				const auto now = clock::now();
-				const float dt = lastGun == gun ? std::chrono::duration<float>(now - last).count() : -1.0f;
-				last = now;
-				lastGun = gun;
-				char gap[32];
-				if (dt >= 0.0f && dt < 5.0f) {
-					std::snprintf(gap, sizeof(gap), "+%.3fs", dt);
-				} else {
-					std::snprintf(gap, sizeof(gap), "(first)");
+			std::string_view tag{ a_ev->tag.c_str() };
+			static constexpr std::string_view kWanted[] = { "SoundPlay", "CastOKStop", "attackStop", "bashStop", "preHitFrame",
+				"weaponSwing", "KillMoveStart", "blockStart", "blockStop", "weaponSheathe", "staggerStart" };
+			bool want = false;
+			for (auto w : kWanted) {
+				if (IEquals(tag, w)) {
+					want = true;
+					break;
 				}
-				SKSE::log::info("{}: shot {}/{} {}", gun->name, gun->fired, gun->size, gap);
 			}
-			if (gun->fired >= gun->size) {
-				gun->fired = 0;
-				Unload(gun);
-				Reload(gun);
+			if (!want) {
+				return RE::BSEventNotifyControl::kContinue;
 			}
+			std::string payload = a_ev->payload.empty() ? std::string{} : std::string{ a_ev->payload.c_str() };
+			if (IEquals(tag, "SoundPlay") && !payload.starts_with("KG")) {
+				return RE::BSEventNotifyControl::kContinue;
+			}
+			SKSE::GetTaskInterface()->AddTask([t = std::string{ tag }, payload]() { Handle(t, payload); });
 			return RE::BSEventNotifyControl::kContinue;
+		}
+	};
+
+	class EquipSink : public RE::BSTEventSink<RE::TESEquipEvent>
+	{
+	public:
+		static EquipSink* Get()
+		{
+			static EquipSink s;
+			return &s;
 		}
 
 		RE::BSEventNotifyControl ProcessEvent(const RE::TESEquipEvent* a_ev, RE::BSTEventSource<RE::TESEquipEvent>*) override
 		{
-			if (!a_ev || !a_ev->actor || a_ev->actor.get() != RE::PlayerCharacter::GetSingleton() || !a_ev->equipped || g_reloading) {
+			auto pc = RE::PlayerCharacter::GetSingleton();
+			if (!a_ev || !a_ev->actor || a_ev->actor.get() != pc || !g_weapon || a_ev->baseObject != g_weapon->GetFormID()) {
 				return RE::BSEventNotifyControl::kContinue;
 			}
-			for (auto& g : g_guns) {
-				if (a_ev->baseObject == g.id) {
-					g.fired = 0;  // gun (re)equipped: full magazine
+			const bool on = a_ev->equipped;
+			SKSE::GetTaskInterface()->AddTask([on]() {
+				auto pc = RE::PlayerCharacter::GetSingleton();
+				if (!pc) {
+					return;
 				}
-			}
-			auto form = RE::TESForm::LookupByID(a_ev->baseObject);
-			if (form && form->Is(RE::FormType::Ammo)) {
-				if (auto gun = EquippedGun()) {
-					gun->fired = 0;  // ammo equipped by hand = manual reload
+				if (on) {
+					pc->AddAnimationGraphEventSink(AnimSink::Get());   // graph may have been rebuilt (new game, race change)
+					Runes(pc, true);
+				} else {
+					Clear(pc);
+					Runes(pc, false);
 				}
-			}
+				SKSE::log::info("King's sword {}", on ? "equipped" : "unequipped");
+			});
 			return RE::BSEventNotifyControl::kContinue;
 		}
 	};
 
 	void OnDataLoaded()
 	{
-		auto dh = RE::TESDataHandler::GetSingleton();
-		for (auto& g : g_guns) {
-			auto form = dh ? dh->LookupForm(g.local, kPlugin) : nullptr;
-			g.id = form ? form->GetFormID() : 0;
-			SKSE::log::info("{}: form {:08X} magazine {}", g.name, g.id, g.size);
+		g_weapon = Lookup<RE::TESObjectWEAP>(kWeapon);
+		g_sndBreak = Lookup<RE::BGSSoundDescriptorForm>(kSndBreak);
+		g_sndSummon = Lookup<RE::BGSSoundDescriptorForm>(kSndSummon);
+		g_sndSummonK = Lookup<RE::BGSSoundDescriptorForm>(kSndSummonK);
+		g_sndJudge = Lookup<RE::BGSSoundDescriptorForm>(kSndJudge);
+		g_cut = Lookup<RE::SpellItem>(kCutSpell);
+		g_expl = Lookup<RE::BGSExplosion>(kExpl);
+		g_explL = Lookup<RE::BGSExplosion>(kExplL);
+		g_dummy = Lookup<RE::TESObjectACTI>(kDummy);
+		for (int i = 1; i <= 4; ++i) {
+			g_stage[i] = Lookup<RE::SpellItem>(kStage1 + i - 1);
 		}
-		auto src = RE::ScriptEventSourceHolder::GetSingleton();
-		src->AddEventSink<RE::TESContainerChangedEvent>(Sink::Get());
-		src->AddEventSink<RE::TESEquipEvent>(Sink::Get());
+		g_runeR = Lookup<RE::TESObjectARMO>(kRuneR);
+		g_runeL = Lookup<RE::TESObjectARMO>(kRuneL);
+		int n = 0;
+		for (auto& p : g_ph) {
+			p.form = Lookup<RE::TESObjectARMO>(p.local);
+			n += p.form ? 1 : 0;
+		}
+		SKSE::log::info("forms: sword {:08X}, {} phantom swords, cut {}, explosions {}/{}", g_weapon ? g_weapon->GetFormID() : 0, n,
+			g_cut != nullptr, g_expl != nullptr, g_explL != nullptr);
+		RE::ScriptEventSourceHolder::GetSingleton()->AddEventSink<RE::TESEquipEvent>(EquipSink::Get());
 	}
 
 	void OnGameLoaded()
 	{
-		for (auto& g : g_guns) {
-			g.fired = 0;
+		auto pc = RE::PlayerCharacter::GetSingleton();
+		if (!pc) {
+			return;
 		}
-		g_pend = nullptr;
-		g_check = nullptr;
-		g_unloaded = nullptr;
+		pc->AddAnimationGraphEventSink(AnimSink::Get());
+		Clear(pc);
+		const bool holds = HoldsSword(pc);
+		Runes(pc, holds);
+		SKSE::log::info("game loaded, King's sword {}", holds ? "in hand" : "not equipped");
 	}
 }
 
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
-	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S.%e] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.8.0 - runtime {}", a_skse->RuntimeVersion().string());
-	Mech::Install();
-
+	SKSE::Init(a_skse, { .log = true, .logName = "KingsglaiveFX", .logPattern = "[%H:%M:%S.%e] %v" });
+	SKSE::log::info("KingsglaiveFX 1.0.0 - runtime {}", a_skse->RuntimeVersion().string());
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
 		switch (a_msg->type) {
 		case SKSE::MessagingInterface::kDataLoaded:
@@ -441,7 +439,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 			break;
 		case SKSE::MessagingInterface::kPostLoadGame:
 		case SKSE::MessagingInterface::kNewGame:
-			OnGameLoaded();
+			SKSE::GetTaskInterface()->AddTask([]() { OnGameLoaded(); });
 			break;
 		default:
 			break;
