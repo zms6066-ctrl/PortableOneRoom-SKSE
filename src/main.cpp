@@ -1,4 +1,5 @@
 #include <chrono>
+#include "phantom.h"
 #include <cstdio>
 // PortableOneRoomMag: magazines for the Portable One Room guns (K2 30 rounds, Colt New Agent 8, Colt SAA 6).
 // Replaces the old Papyrus scripts (PORGun on the weapon + PORMagWatch effect). Those were attached to the
@@ -15,6 +16,7 @@
 //            and the hammer falls / is pushed back; K2 - bolt carrier + charging handle.
 //            Driven from PlayerCharacter::Update (vtable 0xAD).
 // view     : per-view position / scale of the gun (PORAdjust node), 1st and 3rd person separately
+// phantom  : Phantom Sword (B00) phantom-sword show and combo stage - phantom.cpp
 
 namespace
 {
@@ -141,6 +143,7 @@ namespace
 				Tick(a_pc, a_dt);
 				ReloadTick(a_pc, a_dt);
 				ViewTick(a_pc);
+				Phantom::Tick(a_pc);
 			}
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
@@ -431,17 +434,19 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse, { .log = true, .logName = "PortableOneRoomMag", .logPattern = "[%H:%M:%S.%e] %v" });
-	SKSE::log::info("PortableOneRoomMag 1.8.0 - runtime {}", a_skse->RuntimeVersion().string());
+	SKSE::log::info("PortableOneRoomMag 1.9.0 - runtime {}", a_skse->RuntimeVersion().string());
 	Mech::Install();
 
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
 		switch (a_msg->type) {
 		case SKSE::MessagingInterface::kDataLoaded:
 			OnDataLoaded();
+			Phantom::OnDataLoaded();
 			break;
 		case SKSE::MessagingInterface::kPostLoadGame:
 		case SKSE::MessagingInterface::kNewGame:
 			OnGameLoaded();
+			Phantom::OnGameLoaded();
 			break;
 		default:
 			break;
